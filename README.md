@@ -1,2 +1,31 @@
-# paybridge-payment-integration-platform
-Enterprise-grade payment gateway integration simulator with merchant dashboard, webhook handling, retry engine, API monitoring, and production-ready troubleshooting workflows.
+# PayBridge
+
+Overview
+
+Features
+
+Architecture
+
+Screenshots
+
+System Design
+
+Tech Stack
+
+Folder Structure
+
+API Documentation
+
+Running Locally
+
+Environment Variables
+
+Docker Setup
+
+Testing
+
+Roadmap
+
+Contributing
+
+License
