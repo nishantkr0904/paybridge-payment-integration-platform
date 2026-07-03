@@ -1,0 +1,25 @@
+{
+  "name": "paybridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Payment gateway integration simulator for merchant checkout, payment APIs, webhooks, and dashboards.",
+  "scripts": {
+    "dev": "npm run dev --workspace server",
+    "dev:server": "npm run dev --workspace server",
+    "dev:client": "npm run dev --workspace client",
+    "build": "npm run build --workspace server && npm run build --workspace client",
+    "lint": "npm run lint --workspace server && npm run lint --workspace client"
+  },
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "globals": "^17.7.0",
+    "typescript-eslint": "^8.62.1"
+  }
+}
