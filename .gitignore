@@ -70,3 +70,7 @@ temp/
 # Misc
 # ===========================
 .cache/
+
+docs/history.md
+docs/context.md
+docs/ARCHITECTURE_DECISIONS.md
