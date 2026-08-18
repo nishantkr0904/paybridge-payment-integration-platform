@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { logger } from '../utils/logger.js';
 import { getRabbitMQChannel, QUEUES, EXCHANGES } from '../infrastructure/rabbitmq.js';
 import { updateOrderStatus, updateTransactionStatus } from '../modules/payment/payment.repository.js';
 import { generateUlid } from '../utils/ulid.js';
@@ -47,7 +48,7 @@ function simulateGateway(method: string): {
 
 export async function startPaymentWorker() {
   const channel = await getRabbitMQChannel();
-  console.log('Payment worker listening on', QUEUES.PAYMENT_PROCESSING);
+  logger.info(`Payment worker listening on ${QUEUES.PAYMENT_PROCESSING}`);
 
   // Prefetch to process one message at a time
   await channel.prefetch(1);
@@ -59,14 +60,14 @@ export async function startPaymentWorker() {
     try {
       payload = JSON.parse(msg.content.toString());
     } catch (err) {
-      console.error('[Worker] Failed to parse message, sending to DLQ', err);
+      logger.error({ err }, '[Worker] Failed to parse message, sending to DLQ');
       return channel.nack(msg, false, false);
     }
 
     const { transactionId, orderId, merchantId, orderRef, paymentMethod, retryCount = 0 } = payload;
     const MAX_RETRIES = 3;
 
-    console.log(`[Worker] Processing payment for transaction ${transactionId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
+    logger.info({ transactionId, attempt: retryCount + 1 }, `[Worker] Processing payment for transaction ${transactionId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
 
     try {
       // We wrap it in a short delay to simulate network latency
@@ -112,14 +113,14 @@ export async function startPaymentWorker() {
         { persistent: true }
       );
 
-      console.log(`[Worker] Transaction ${transactionId} completed with status: ${finalTxnStatus}`);
+      logger.info({ transactionId, status: finalTxnStatus }, `[Worker] Transaction ${transactionId} completed with status: ${finalTxnStatus}`);
       
       channel.ack(msg);
     } catch (error) {
-      console.error(`[Worker] Error processing message (Transaction ${transactionId}):`, (error as Error).message);
+      logger.error({ err: error }, `[Worker] Error processing message (Transaction ${transactionId})`);
       
       if (retryCount < MAX_RETRIES) {
-        console.log(`[Worker] Retrying transaction ${transactionId} in 2 seconds...`);
+        logger.info(`[Worker] Retrying transaction ${transactionId} in 2 seconds...`);
         
         // Wait before requeuing to act as a simple backoff
         await new Promise((resolve) => setTimeout(resolve, 2000));
@@ -136,7 +137,7 @@ export async function startPaymentWorker() {
         // Ack the original message so it doesn't get processed again
         channel.ack(msg);
       } else {
-        console.error(`[Worker] Max retries reached for transaction ${transactionId}. Sending to DLQ.`);
+        logger.info(`[Worker] Max retries reached for transaction ${transactionId}. Sending to DLQ.`);
         // NACK without requeue sends it to the DLX/DLQ
         channel.nack(msg, false, false);
         
@@ -145,7 +146,7 @@ export async function startPaymentWorker() {
           await updateTransactionStatus(transactionId, 'failed', undefined, 'System Error: Max retries exceeded');
           await updateOrderStatus(orderId, 'failed');
         } catch (dbErr) {
-          console.error('[Worker] Failed to update DB after max retries:', dbErr);
+          logger.error({ err: dbErr }, `[Worker] Failed to update DB after max retries: ${transactionId}`);
         }
       }
     }

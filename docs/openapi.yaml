@@ -1,0 +1,79 @@
+openapi: 3.0.3
+info:
+  title: PayBridge API
+  description: Payment Integration Platform API
+  version: 1.0.0
+servers:
+  - url: http://localhost:4000/api
+    description: Local development server
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+security:
+  - bearerAuth: []
+paths:
+  /health:
+    get:
+      summary: Health check
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  service:
+                    type: string
+  /payments/orders:
+    post:
+      summary: Create a new payment order
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - amount
+                - currency
+                - customerEmail
+              properties:
+                amount:
+                  type: number
+                currency:
+                  type: string
+                customerEmail:
+                  type: string
+      responses:
+        '201':
+          description: Order created
+  /payments/orders/{orderId}/pay:
+    post:
+      summary: Process a payment for an order
+      parameters:
+        - in: path
+          name: orderId
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - paymentMethod
+              properties:
+                paymentMethod:
+                  type: string
+      responses:
+        '202':
+          description: Payment processing accepted

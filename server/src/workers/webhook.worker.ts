@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { logger } from '../utils/logger.js';
 import crypto from 'node:crypto';
 import { getRabbitMQChannel, QUEUES } from '../infrastructure/rabbitmq.js';
 import { getWebhookEndpoints } from '../modules/webhook/webhook.repository.js';
@@ -22,7 +23,7 @@ async function updateDelivery(id: number, status: 'success' | 'failed', response
 
 export async function startWebhookWorker() {
   const channel = await getRabbitMQChannel();
-  console.log('Webhook worker listening on', QUEUES.WEBHOOK_DELIVERY);
+  logger.info(`Webhook worker listening on ${QUEUES.WEBHOOK_DELIVERY}`);
 
   await channel.prefetch(5);
 
@@ -33,14 +34,14 @@ export async function startWebhookWorker() {
     try {
       payload = JSON.parse(msg.content.toString());
     } catch (err) {
-      console.error('[Webhook Worker] Failed to parse message', err);
+      logger.error({ err }, '[Webhook Worker] Failed to parse message');
       return channel.ack(msg); // Malformed, just drop it
     }
 
     const { merchantId, eventType, data, retryCount = 0 } = payload;
     const MAX_RETRIES = 5;
 
-    console.log(`[Webhook Worker] Delivering ${eventType} to merchant ${merchantId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
+    logger.info(`[Webhook Worker] Delivering ${eventType} to merchant ${merchantId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
 
     try {
       // Find active webhook endpoint for merchant
@@ -48,7 +49,7 @@ export async function startWebhookWorker() {
       const activeEndpoint = endpoints.find(e => e.isActive);
 
       if (!activeEndpoint) {
-        console.log(`[Webhook Worker] No active webhook endpoint found for merchant ${merchantId}. Skipping.`);
+        logger.info(`[Webhook Worker] No active webhook endpoint found for merchant ${merchantId}. Skipping.`);
         return channel.ack(msg);
       }
 
@@ -84,15 +85,14 @@ export async function startWebhookWorker() {
         await updateDelivery(deliveryId, isSuccess ? 'success' : 'failed', response.status);
 
         if (isSuccess) {
-          console.log(`[Webhook Worker] Delivery successful. HTTP ${response.status}`);
+          logger.info(`[Webhook Worker] Delivery successful. HTTP ${response.status}`);
           channel.ack(msg);
         } else {
           throw new Error(`Non-success HTTP status ${response.status}`);
         }
       } catch (deliveryError) {
         // Network error, timeout, or 500 status code
-        const errorMessage = deliveryError instanceof Error ? deliveryError.message : 'Unknown error';
-        console.error(`[Webhook Worker] Delivery failed: ${errorMessage}`);
+        logger.error({ err: deliveryError }, `[Webhook Worker] Delivery failed`);
         
         // Ensure DB is updated to reflect failure if not already updated
         await updateDelivery(deliveryId, 'failed', null);
@@ -101,7 +101,7 @@ export async function startWebhookWorker() {
     } catch {
       if (retryCount < MAX_RETRIES) {
         const backoffMs = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s, 8s, 16s
-        console.log(`[Webhook Worker] Retrying in ${backoffMs}ms...`);
+        logger.info(`[Webhook Worker] Retrying in ${backoffMs}ms...`);
         
         await new Promise((resolve) => setTimeout(resolve, backoffMs));
         
@@ -115,7 +115,7 @@ export async function startWebhookWorker() {
         
         channel.ack(msg);
       } else {
-        console.error(`[Webhook Worker] Max retries reached for webhook delivery.`);
+        logger.error(`[Webhook Worker] Max retries reached for webhook delivery.`);
         channel.ack(msg); // Drop after max retries
       }
     }
@@ -124,7 +124,7 @@ export async function startWebhookWorker() {
 
 if (process.argv[1] && process.argv[1].endsWith('webhook.worker.ts')) {
   startWebhookWorker().catch((err) => {
-    console.error('Failed to start worker', err);
+    logger.error({ err }, 'Failed to start worker');
     process.exit(1);
   });
 }

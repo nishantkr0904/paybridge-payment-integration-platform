@@ -1,5 +1,6 @@
 import { createApp } from './app.js';
 import { env } from './config/env.js';
+import { logger } from './utils/logger.js';
 
 import { connectRedis } from './infrastructure/redis.js';
 import { connectRabbitMQ } from './infrastructure/rabbitmq.js';
@@ -7,18 +8,18 @@ import { connectRabbitMQ } from './infrastructure/rabbitmq.js';
 async function bootstrap() {
   try {
     await connectRedis();
-    console.log('Redis connected on startup');
+    logger.info('Redis connected on startup');
     
     await connectRabbitMQ();
-    console.log('RabbitMQ connected on startup');
+    logger.info('RabbitMQ connected on startup');
     
     const app = createApp();
 
     app.listen(env.PORT, () => {
-      console.log(`PayBridge server listening on port ${env.PORT}`);
+      logger.info(`PayBridge server listening on port ${env.PORT}`);
     });
   } catch (error) {
-    console.error('Failed to start server:', error);
+    logger.error({ err: error }, 'Failed to start server');
     process.exit(1);
   }
 }
