@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "dev:worker": "tsx watch src/workers/payment.worker.ts",
+    "dev:dlq-worker": "tsx watch src/workers/dlq.worker.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
     "start:worker": "node dist/workers/payment.worker.js",
+    "start:dlq-worker": "node dist/workers/dlq.worker.js",
     "lint": "eslint \"src/**/*.ts\""
   },
   "dependencies": {
