@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query';
 import { Activity, CreditCard, LogOut, ShieldCheck } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { getMerchantProfile } from '../api/merchant';
 import { useAuth } from '../providers/AuthProvider';
 
 export function DashboardPage() {
   const { logout, user } = useAuth();
+  const navigate = useNavigate();
   const profileQuery = useQuery({
     queryKey: ['merchant-profile'],
     queryFn: getMerchantProfile
@@ -26,14 +28,24 @@ export function DashboardPage() {
               <h1 className="text-lg font-semibold text-ink">Merchant Dashboard</h1>
             </div>
           </div>
-          <button
-            className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-ink"
-            type="button"
-            onClick={logout}
-          >
-            <LogOut size={16} aria-hidden="true" />
-            Logout
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-ink"
+              type="button"
+              onClick={() => navigate('/payments')}
+            >
+              <CreditCard size={16} aria-hidden="true" />
+              Payments
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-ink"
+              type="button"
+              onClick={logout}
+            >
+              <LogOut size={16} aria-hidden="true" />
+              Logout
+            </button>
+          </div>
         </div>
       </header>
 
@@ -65,7 +77,10 @@ export function DashboardPage() {
           <SummaryTile label="Pending payments" value={summary?.pendingPayments ?? 0} />
         </div>
 
-        <div className="mt-6 rounded-md border border-line bg-white p-5">
+        <div
+          className="mt-6 cursor-pointer rounded-md border border-line bg-white p-5 hover:border-ink"
+          onClick={() => navigate('/payments')}
+        >
           <div className="flex items-center gap-3">
             <div className="flex h-10 w-10 items-center justify-center rounded-md bg-surface text-ink">
               <CreditCard size={20} aria-hidden="true" />
@@ -73,7 +88,7 @@ export function DashboardPage() {
             <div>
               <h3 className="font-semibold text-ink">Payment workspace</h3>
               <p className="text-sm text-slate-600">
-                Checkout API and transaction activity will appear here in Version 2.
+                Create checkout orders, process payments, and view transaction history.
               </p>
             </div>
           </div>
@@ -94,3 +109,4 @@ function SummaryTile({ label, value }: { label: string; value: number }) {
     </div>
   );
 }
+

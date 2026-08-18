@@ -1,16 +1,15 @@
 import { Router } from 'express';
 import { authenticate } from '../../middleware/authenticate.js';
+import { getMerchantProfile } from './merchant.service.js';
 
 export const merchantRouter = Router();
 
-merchantRouter.get('/me', authenticate, (req, res) => {
-  res.json({
-    user: req.user,
-    summary: {
-      totalTransactions: 0,
-      successfulPayments: 0,
-      failedPayments: 0,
-      pendingPayments: 0
-    }
-  });
+merchantRouter.get('/me', authenticate, async (req, res, next) => {
+  try {
+    const profile = await getMerchantProfile(req.user!);
+    res.json(profile);
+  } catch (error) {
+    next(error);
+  }
 });
+
