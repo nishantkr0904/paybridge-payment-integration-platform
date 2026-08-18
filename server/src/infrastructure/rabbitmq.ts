@@ -8,11 +8,13 @@ let channel: amqp.Channel | null = null;
 export const QUEUES = {
   PAYMENT_PROCESSING: 'payment_processing_queue',
   PAYMENT_DLQ: 'payment_dlq',
+  WEBHOOK_DELIVERY: 'webhook_queue',
 };
 
 export const EXCHANGES = {
   PAYMENT: 'payment_exchange',
   DLX: 'dlx_exchange',
+  WEBHOOK: 'webhook_exchange',
 };
 
 export async function connectRabbitMQ() {
@@ -44,6 +46,11 @@ export async function connectRabbitMQ() {
     });
     
     await channel.bindQueue(QUEUES.PAYMENT_PROCESSING, EXCHANGES.PAYMENT, 'payment.process');
+
+    // Setup Webhook Exchange and Queue
+    await channel.assertExchange(EXCHANGES.WEBHOOK, 'direct', { durable: true });
+    await channel.assertQueue(QUEUES.WEBHOOK_DELIVERY, { durable: true });
+    await channel.bindQueue(QUEUES.WEBHOOK_DELIVERY, EXCHANGES.WEBHOOK, 'webhook.deliver');
 
     console.log('RabbitMQ Connected and Queues Assured');
     
