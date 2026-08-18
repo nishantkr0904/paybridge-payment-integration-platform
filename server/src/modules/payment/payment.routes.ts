@@ -46,7 +46,7 @@ paymentRouter.post('/orders/:orderRef/pay', async (req, res, next) => {
   try {
     const input = processPaymentSchema.parse(req.body);
     const result = await processPayment(req.params.orderRef, req.user!.id, input);
-    res.json(result);
+    res.status(202).json(result);
   } catch (error) {
     next(error);
   }

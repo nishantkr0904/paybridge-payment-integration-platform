@@ -32,47 +32,8 @@ export async function createCheckoutOrder(merchantId: number, input: CreateOrder
   return order;
 }
 
-/* ------------------------------------------------------------------ */
-/*  Process payment                                                   */
-/* ------------------------------------------------------------------ */
-
-function simulateGateway(method: string): {
-  success: boolean;
-  gatewayResponse: Record<string, unknown>;
-  failureReason?: string;
-} {
-  const isSuccess = Math.random() < 0.8;
-
-  if (isSuccess) {
-    return {
-      success: true,
-      gatewayResponse: {
-        provider: 'paybridge-sim',
-        method,
-        authCode: generateUlid().slice(0, 12),
-        processedAt: new Date().toISOString()
-      }
-    };
-  }
-
-  const reasons = [
-    'Insufficient funds',
-    'Card declined by issuer',
-    'Transaction timeout',
-    'Risk check failed'
-  ];
-
-  return {
-    success: false,
-    gatewayResponse: {
-      provider: 'paybridge-sim',
-      method,
-      errorCode: 'GATEWAY_DECLINED',
-      processedAt: new Date().toISOString()
-    },
-    failureReason: reasons[Math.floor(Math.random() * reasons.length)]
-  };
-}
+import { acquireLock, releaseLock } from '../../infrastructure/redis.js';
+import { getRabbitMQChannel, EXCHANGES } from '../../infrastructure/rabbitmq.js';
 
 export async function processPayment(orderRef: string, merchantId: number, input: ProcessPaymentInput) {
   const order = await findOrderByRef(orderRef);
@@ -93,42 +54,60 @@ export async function processPayment(orderRef: string, merchantId: number, input
     throw new HttpError(409, 'ORDER_PROCESSING', 'A payment is currently being processed for this order.');
   }
 
-  const txnRef = generateUlid();
+  // Acquire a distributed lock to prevent double-processing
+  // Uses orderRef as the lock key with a 10 second TTL
+  const lockKey = `lock:order:${orderRef}`;
+  const isLocked = await acquireLock(lockKey, 10);
+  
+  if (!isLocked) {
+    throw new HttpError(429, 'ORDER_PROCESSING', 'A payment request is already in progress. Please try again.');
+  }
 
-  const transaction = await createTransaction({
-    orderId: order.id,
-    txnRef,
-    paymentMethod: input.paymentMethod,
-    amount: order.amount
-  });
+  try {
+    const txnRef = generateUlid();
 
-  await updateTransactionStatus(transaction.id, 'processing');
-  await updateOrderStatus(order.id, 'processing');
+    const transaction = await createTransaction({
+      orderId: order.id,
+      txnRef,
+      paymentMethod: input.paymentMethod,
+      amount: order.amount
+    });
 
-  const result = simulateGateway(input.paymentMethod);
+    await updateTransactionStatus(transaction.id, 'processing');
+    await updateOrderStatus(order.id, 'processing');
 
-  const finalTxnStatus = result.success ? 'success' as const : 'failed' as const;
-  const finalOrderStatus = result.success ? 'success' as const : 'failed' as const;
+    // Publish to RabbitMQ for asynchronous processing
+    const channel = await getRabbitMQChannel();
+    
+    const payload = {
+      transactionId: transaction.id,
+      orderId: order.id,
+      orderRef: order.orderRef,
+      txnRef,
+      paymentMethod: input.paymentMethod,
+      amount: order.amount
+    };
 
-  await updateTransactionStatus(
-    transaction.id,
-    finalTxnStatus,
-    result.gatewayResponse,
-    result.failureReason
-  );
+    channel.publish(
+      EXCHANGES.PAYMENT,
+      'payment.process',
+      Buffer.from(JSON.stringify(payload)),
+      { persistent: true }
+    );
 
-  await updateOrderStatus(order.id, finalOrderStatus);
-
-  return {
-    orderRef: order.orderRef,
-    txnRef,
-    status: finalOrderStatus,
-    paymentMethod: input.paymentMethod,
-    amount: order.amount,
-    currency: order.currency,
-    gatewayResponse: result.gatewayResponse,
-    failureReason: result.failureReason ?? null
-  };
+    return {
+      orderRef: order.orderRef,
+      txnRef,
+      status: 'processing',
+      paymentMethod: input.paymentMethod,
+      amount: order.amount,
+      currency: order.currency,
+      message: 'Payment has been queued for processing.'
+    };
+  } finally {
+    // We can release the lock since the DB state has been moved to 'processing'
+    await releaseLock(lockKey);
+  }
 }
 
 /* ------------------------------------------------------------------ */
