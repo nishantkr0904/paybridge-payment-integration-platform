@@ -154,7 +154,7 @@ export async function startPaymentWorker() {
 }
 
 // If run directly via node/tsx
-if (process.argv[1] && process.argv[1].endsWith('payment.worker.ts')) {
+if (process.argv[1] && (process.argv[1].endsWith('payment.worker.ts') || process.argv[1].endsWith('payment.worker.js'))) {
   startPaymentWorker().catch((err) => {
     console.error('Failed to start worker', err);
     process.exit(1);

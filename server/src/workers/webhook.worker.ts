@@ -122,7 +122,7 @@ export async function startWebhookWorker() {
   });
 }
 
-if (process.argv[1] && process.argv[1].endsWith('webhook.worker.ts')) {
+if (process.argv[1] && (process.argv[1].endsWith('webhook.worker.ts') || process.argv[1].endsWith('webhook.worker.js'))) {
   startWebhookWorker().catch((err) => {
     logger.error({ err }, 'Failed to start worker');
     process.exit(1);

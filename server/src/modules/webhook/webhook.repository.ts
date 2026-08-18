@@ -20,13 +20,14 @@ export async function getWebhookEndpoints(merchantId: number): Promise<WebhookEn
 }
 
 export async function getWebhookDeliveries(merchantId: number, limit = 50): Promise<WebhookDelivery[]> {
+  const safeLimit = Math.max(1, Math.min(100, Number(limit) || 50));
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT d.id, d.endpoint_id as endpointId, d.event_type as eventType, d.payload, d.status, d.response_status as responseStatus, d.created_at as createdAt
      FROM webhook_deliveries d
      JOIN webhook_endpoints e ON d.endpoint_id = e.id
      WHERE e.merchant_id = ?
-     ORDER BY d.created_at DESC LIMIT ?`,
-    [merchantId, limit]
+     ORDER BY d.created_at DESC LIMIT ${safeLimit}`,
+    [merchantId]
   );
   return rows as WebhookDelivery[];
 }

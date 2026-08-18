@@ -31,7 +31,7 @@ export async function startDlqWorker() {
 }
 
 // If run directly via node/tsx
-if (process.argv[1] && process.argv[1].endsWith('dlq.worker.ts')) {
+if (process.argv[1] && (process.argv[1].endsWith('dlq.worker.ts') || process.argv[1].endsWith('dlq.worker.js'))) {
   startDlqWorker().catch((err) => {
     logger.fatal({ err }, 'Failed to start DLQ worker');
     process.exit(1);
