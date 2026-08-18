@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { Activity, CreditCard, LogOut, ShieldCheck } from 'lucide-react';
+import { Activity, CreditCard, LogOut, ShieldCheck, Code2 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { getMerchantProfile } from '../api/merchant';
 import { useAuth } from '../providers/AuthProvider';
@@ -36,6 +36,14 @@ export function DashboardPage() {
             >
               <CreditCard size={16} aria-hidden="true" />
               Payments
+            </button>
+            <button
+              className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-ink"
+              type="button"
+              onClick={() => navigate('/developers')}
+            >
+              <Code2 size={16} aria-hidden="true" />
+              Developers
             </button>
             <button
               className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-ink"

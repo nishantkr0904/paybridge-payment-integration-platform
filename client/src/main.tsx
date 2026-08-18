@@ -8,6 +8,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { LoginPage } from './pages/LoginPage';
 import { OrderDetailPage } from './pages/OrderDetailPage';
 import { PaymentsPage } from './pages/PaymentsPage';
+import { DeveloperPage } from './pages/DeveloperPage';
 import './styles.css';
 
 const queryClient = new QueryClient();
@@ -33,6 +34,7 @@ function App() {
             <Route path="/payments" element={<ProtectedRoute><PaymentsPage /></ProtectedRoute>} />
             <Route path="/payments/new" element={<ProtectedRoute><CreateOrderPage /></ProtectedRoute>} />
             <Route path="/payments/:orderRef" element={<ProtectedRoute><OrderDetailPage /></ProtectedRoute>} />
+            <Route path="/developers" element={<ProtectedRoute><DeveloperPage /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/dashboard" replace />} />
           </Routes>
         </BrowserRouter>

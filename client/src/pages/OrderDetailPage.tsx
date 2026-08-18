@@ -35,7 +35,10 @@ export function OrderDetailPage() {
   const orderQuery = useQuery({
     queryKey: ['order', orderRef],
     queryFn: () => getOrder(orderRef!),
-    enabled: !!orderRef
+    enabled: !!orderRef,
+    refetchInterval: (query) => {
+      return query.state.data?.order.status === 'processing' ? 2000 : false;
+    }
   });
 
   const payMutation = useMutation({
@@ -147,11 +150,15 @@ export function OrderDetailPage() {
               className={`mb-3 rounded-md border px-3 py-2 text-sm ${
                 payMutation.data.status === 'success'
                   ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                  : payMutation.data.status === 'processing'
+                  ? 'border-blue-200 bg-blue-50 text-blue-700'
                   : 'border-red-200 bg-red-50 text-red-700'
               }`}
             >
               {payMutation.data.status === 'success'
                 ? `Payment successful — Txn ${payMutation.data.txnRef}`
+                : payMutation.data.status === 'processing'
+                ? 'Payment queued for processing...'
                 : `Payment failed — ${payMutation.data.failureReason}`}
             </div>
           ) : null}

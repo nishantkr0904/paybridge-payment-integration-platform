@@ -7,6 +7,7 @@ import { errorHandler } from './middleware/error-handler.js';
 import { authRouter } from './modules/auth/auth.routes.js';
 import { merchantRouter } from './modules/merchant/merchant.routes.js';
 import { paymentRouter } from './modules/payment/payment.routes.js';
+import { webhookRouter } from './modules/webhook/webhook.routes.js';
 
 export function createApp() {
   const app = express();
@@ -23,6 +24,7 @@ export function createApp() {
   app.use('/api/auth', authRouter);
   app.use('/api/merchants', merchantRouter);
   app.use('/api/payments', paymentRouter);
+  app.use('/api/webhooks', webhookRouter);
   app.use(errorHandler);
 
   return app;
