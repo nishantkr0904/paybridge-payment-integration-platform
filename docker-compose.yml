@@ -53,11 +53,12 @@ services:
       - "4000:4000"
     environment:
       - NODE_ENV=production
-      - DB_HOST=mysql
-      - DB_USER=paybridge
-      - DB_PASSWORD=change_me
-      - DB_NAME=paybridge
-      - JWT_SECRET=development_secret_key_change_in_production
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=paybridge
+      - MYSQL_PASSWORD=change_me
+      - MYSQL_DATABASE=paybridge
+      - JWT_ACCESS_SECRET=development_access_secret_change_in_production
+      - JWT_REFRESH_SECRET=development_refresh_secret_change_in_production
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://rabbitmq:5672
     depends_on:
@@ -76,10 +77,12 @@ services:
     command: ["npm", "run", "start:payment-worker", "--workspace", "server"]
     environment:
       - NODE_ENV=production
-      - DB_HOST=mysql
-      - DB_USER=paybridge
-      - DB_PASSWORD=change_me
-      - DB_NAME=paybridge
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=paybridge
+      - MYSQL_PASSWORD=change_me
+      - MYSQL_DATABASE=paybridge
+      - JWT_ACCESS_SECRET=development_access_secret_change_in_production
+      - JWT_REFRESH_SECRET=development_refresh_secret_change_in_production
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://rabbitmq:5672
     depends_on:
@@ -98,10 +101,12 @@ services:
     command: ["npm", "run", "start:dlq-worker", "--workspace", "server"]
     environment:
       - NODE_ENV=production
-      - DB_HOST=mysql
-      - DB_USER=paybridge
-      - DB_PASSWORD=change_me
-      - DB_NAME=paybridge
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=paybridge
+      - MYSQL_PASSWORD=change_me
+      - MYSQL_DATABASE=paybridge
+      - JWT_ACCESS_SECRET=development_access_secret_change_in_production
+      - JWT_REFRESH_SECRET=development_refresh_secret_change_in_production
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://rabbitmq:5672
     depends_on:
@@ -120,10 +125,12 @@ services:
     command: ["npm", "run", "start:webhook-worker", "--workspace", "server"]
     environment:
       - NODE_ENV=production
-      - DB_HOST=mysql
-      - DB_USER=paybridge
-      - DB_PASSWORD=change_me
-      - DB_NAME=paybridge
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=paybridge
+      - MYSQL_PASSWORD=change_me
+      - MYSQL_DATABASE=paybridge
+      - JWT_ACCESS_SECRET=development_access_secret_change_in_production
+      - JWT_REFRESH_SECRET=development_refresh_secret_change_in_production
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://rabbitmq:5672
     depends_on:
