@@ -82,6 +82,7 @@ export async function processPayment(orderRef: string, merchantId: number, input
     const payload = {
       transactionId: transaction.id,
       orderId: order.id,
+      merchantId: order.merchantId,
       orderRef: order.orderRef,
       txnRef,
       paymentMethod: input.paymentMethod,

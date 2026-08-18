@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { getRabbitMQChannel, QUEUES } from '../infrastructure/rabbitmq.js';
+import { getRabbitMQChannel, QUEUES, EXCHANGES } from '../infrastructure/rabbitmq.js';
 import { updateOrderStatus, updateTransactionStatus } from '../modules/payment/payment.repository.js';
 import { generateUlid } from '../utils/ulid.js';
 
@@ -63,7 +63,7 @@ export async function startPaymentWorker() {
       return channel.nack(msg, false, false);
     }
 
-    const { transactionId, orderId, paymentMethod, retryCount = 0 } = payload;
+    const { transactionId, orderId, merchantId, orderRef, paymentMethod, retryCount = 0 } = payload;
     const MAX_RETRIES = 3;
 
     console.log(`[Worker] Processing payment for transaction ${transactionId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
@@ -85,6 +85,32 @@ export async function startPaymentWorker() {
       );
 
       await updateOrderStatus(orderId, finalOrderStatus);
+
+      // Publish webhook event
+      const webhookPayload = {
+        merchantId,
+        transactionId,
+        orderId,
+        orderRef,
+        txnRef: payload.txnRef,
+        eventType: result.success ? 'payment.success' : 'payment.failed',
+        data: {
+          orderRef,
+          txnRef: payload.txnRef,
+          amount: payload.amount,
+          paymentMethod,
+          status: finalTxnStatus,
+          gatewayResponse: result.gatewayResponse,
+          failureReason: result.failureReason
+        }
+      };
+
+      channel.publish(
+        EXCHANGES.WEBHOOK,
+        'webhook.deliver',
+        Buffer.from(JSON.stringify(webhookPayload)),
+        { persistent: true }
+      );
 
       console.log(`[Worker] Transaction ${transactionId} completed with status: ${finalTxnStatus}`);
       
