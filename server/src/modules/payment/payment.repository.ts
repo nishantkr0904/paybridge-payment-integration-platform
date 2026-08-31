@@ -201,6 +201,15 @@ export async function findTransactionsByOrderId(orderId: number): Promise<Transa
   return rows.map(toTransaction);
 }
 
+export async function findTransactionById(id: number): Promise<Transaction | null> {
+  const [rows] = await pool.query<TransactionRow[]>(
+    `SELECT * FROM transactions WHERE id = :id`,
+    { id }
+  );
+
+  return rows[0] ? toTransaction(rows[0]) : null;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Merchant order listing                                            */
 /* ------------------------------------------------------------------ */
