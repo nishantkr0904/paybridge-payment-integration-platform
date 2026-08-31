@@ -1,3 +1,5 @@
+import { acquireLock, releaseLock } from '../../infrastructure/redis.js';
+import { getRabbitMQChannel, EXCHANGES } from '../../infrastructure/rabbitmq.js';
 import { HttpError } from '../../utils/http-error.js';
 import { generateUlid } from '../../utils/ulid.js';
 import {
@@ -11,6 +13,8 @@ import {
   updateTransactionStatus
 } from './payment.repository.js';
 import type { CreateOrderInput, OrderFilters, ProcessPaymentInput } from './payment.types.js';
+
+const PAYMENT_LOCK_TTL_SECONDS = 10;
 
 /* ------------------------------------------------------------------ */
 /*  Create checkout order                                             */
@@ -32,38 +36,35 @@ export async function createCheckoutOrder(merchantId: number, input: CreateOrder
   return order;
 }
 
-import { acquireLock, releaseLock } from '../../infrastructure/redis.js';
-import { getRabbitMQChannel, EXCHANGES } from '../../infrastructure/rabbitmq.js';
-
 export async function processPayment(orderRef: string, merchantId: number, input: ProcessPaymentInput) {
-  const order = await findOrderByRef(orderRef);
-
-  if (!order) {
-    throw new HttpError(404, 'ORDER_NOT_FOUND', 'Order does not exist.');
-  }
-
-  if (order.merchantId !== merchantId) {
-    throw new HttpError(403, 'ORDER_FORBIDDEN', 'Order does not belong to this merchant.');
-  }
-
-  if (order.status === 'success') {
-    throw new HttpError(409, 'ORDER_ALREADY_PAID', 'This order has already been paid.');
-  }
-
-  if (order.status === 'processing') {
-    throw new HttpError(409, 'ORDER_PROCESSING', 'A payment is currently being processed for this order.');
-  }
-
-  // Acquire a distributed lock to prevent double-processing
-  // Uses orderRef as the lock key with a 10 second TTL
+  // Acquire a distributed lock to prevent double-processing.
+  // Uses orderRef as the deterministic logical payment key with a bounded TTL.
   const lockKey = `lock:order:${orderRef}`;
-  const lockToken = await acquireLock(lockKey, 10);
+  const lockToken = await acquireLock(lockKey, PAYMENT_LOCK_TTL_SECONDS);
   
   if (!lockToken) {
     throw new HttpError(429, 'ORDER_PROCESSING', 'A payment request is already in progress. Please try again.');
   }
 
   try {
+    const order = await findOrderByRef(orderRef);
+
+    if (!order) {
+      throw new HttpError(404, 'ORDER_NOT_FOUND', 'Order does not exist.');
+    }
+
+    if (order.merchantId !== merchantId) {
+      throw new HttpError(403, 'ORDER_FORBIDDEN', 'Order does not belong to this merchant.');
+    }
+
+    if (order.status === 'success') {
+      throw new HttpError(409, 'ORDER_ALREADY_PAID', 'This order has already been paid.');
+    }
+
+    if (order.status === 'processing') {
+      throw new HttpError(409, 'ORDER_PROCESSING', 'A payment is currently being processed for this order.');
+    }
+
     const txnRef = generateUlid();
 
     const transaction = await createTransaction({
@@ -106,7 +107,7 @@ export async function processPayment(orderRef: string, merchantId: number, input
       message: 'Payment has been queued for processing.'
     };
   } finally {
-    // We can release the lock since the DB state has been moved to 'processing'
+    // Release the lock since the DB state has been moved to 'processing' or if an error occurred
     await releaseLock(lockKey, lockToken);
   }
 }
