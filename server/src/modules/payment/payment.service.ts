@@ -57,9 +57,9 @@ export async function processPayment(orderRef: string, merchantId: number, input
   // Acquire a distributed lock to prevent double-processing
   // Uses orderRef as the lock key with a 10 second TTL
   const lockKey = `lock:order:${orderRef}`;
-  const isLocked = await acquireLock(lockKey, 10);
+  const lockToken = await acquireLock(lockKey, 10);
   
-  if (!isLocked) {
+  if (!lockToken) {
     throw new HttpError(429, 'ORDER_PROCESSING', 'A payment request is already in progress. Please try again.');
   }
 
@@ -107,7 +107,7 @@ export async function processPayment(orderRef: string, merchantId: number, input
     };
   } finally {
     // We can release the lock since the DB state has been moved to 'processing'
-    await releaseLock(lockKey);
+    await releaseLock(lockKey, lockToken);
   }
 }
 

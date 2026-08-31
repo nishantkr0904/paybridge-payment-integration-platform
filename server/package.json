@@ -13,7 +13,9 @@
     "start:payment-worker": "node dist/workers/payment.worker.js",
     "start:dlq-worker": "node dist/workers/dlq.worker.js",
     "start:webhook-worker": "node dist/workers/webhook.worker.js",
-    "lint": "eslint \"src/**/*.ts\""
+    "lint": "eslint \"src/**/*.ts\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "amqplib": "^2.0.1",
@@ -43,6 +45,7 @@
     "@types/yamljs": "^0.2.34",
     "eslint": "^9.17.0",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
   }
 }
