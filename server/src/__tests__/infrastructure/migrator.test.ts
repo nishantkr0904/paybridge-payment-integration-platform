@@ -77,16 +77,17 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
   });
 
   describe('Migration Discovery & Validation', () => {
-    it('discovers and orders canonical project migrations (001–004)', async () => {
+    it('discovers and orders canonical project migrations (001–005)', async () => {
       const canonicalDir = getDefaultMigrationsDir();
       const discovered = await discoverMigrations(canonicalDir);
 
-      expect(discovered.length).toBe(4);
-      expect(discovered.map((m) => m.version)).toEqual([1, 2, 3, 4]);
+      expect(discovered.length).toBe(5);
+      expect(discovered.map((m) => m.version)).toEqual([1, 2, 3, 4, 5]);
       expect(discovered[0].name).toBe('auth_schema');
       expect(discovered[1].name).toBe('payment_schema');
       expect(discovered[2].name).toBe('webhook_schema');
       expect(discovered[3].name).toBe('idempotency_schema');
+      expect(discovered[4].name).toBe('recovery_schema');
 
       for (const m of discovered) {
         expect(m.upChecksum).toHaveLength(64);
@@ -129,6 +130,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
 
   describe('Database Migration Lifecycle & Execution (Integration)', () => {
     const testLockName = `paybridge_test_lock_${Date.now()}`;
+    const testTableName = `schema_migrations_test_${Date.now()}`;
 
     // Helper to create a sandbox migration set
     async function createTestMigrations(dir: string, count = 2) {
@@ -149,8 +151,8 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       // Clean test tracking state
       const conn = await pool.getConnection();
       try {
-        await ensureMigrationsTable(conn);
-        await conn.query('DELETE FROM schema_migrations');
+        await ensureMigrationsTable(conn, testTableName);
+        await conn.query(`DELETE FROM \`${testTableName}\``);
       } finally {
         conn.release();
       }
@@ -159,6 +161,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const initialStatus = await getMigrationStatus({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName
       });
       expect(initialStatus.appliedCount).toBe(0);
@@ -169,6 +172,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const migrateResults = await runMigrations({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName
       });
       expect(migrateResults.length).toBe(2);
@@ -179,6 +183,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const postStatus = await getMigrationStatus({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName
       });
       expect(postStatus.appliedCount).toBe(2);
@@ -189,6 +194,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const repeatMigrate = await runMigrations({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName
       });
       expect(repeatMigrate).toEqual([]);
@@ -197,6 +203,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const rollback1 = await rollbackMigrations({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName,
         step: 1
       });
@@ -207,6 +214,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const rollbackStatus = await getMigrationStatus({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName
       });
       expect(rollbackStatus.appliedCount).toBe(1);
@@ -216,6 +224,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const rollbackAll = await rollbackMigrations({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName,
         to: 0
       });
@@ -225,6 +234,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const finalStatus = await getMigrationStatus({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName
       });
       expect(finalStatus.appliedCount).toBe(0);
@@ -236,8 +246,8 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
 
       const conn = await pool.getConnection();
       try {
-        await ensureMigrationsTable(conn);
-        await conn.query('DELETE FROM schema_migrations');
+        await ensureMigrationsTable(conn, testTableName);
+        await conn.query(`DELETE FROM \`${testTableName}\``);
       } finally {
         conn.release();
       }
@@ -246,6 +256,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       await runMigrations({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName
       });
 
@@ -259,6 +270,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const tamperedStatus = await getMigrationStatus({
         pool,
         migrationsDir: tempDir,
+        tableName: testTableName,
         lockName: testLockName
       });
       expect(tamperedStatus.hasMismatch).toBe(true);
@@ -269,6 +281,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
         runMigrations({
           pool,
           migrationsDir: tempDir,
+          tableName: testTableName,
           lockName: testLockName
         })
       ).rejects.toThrow(/Checksum mismatch for migration 1/);
@@ -278,6 +291,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
         rollbackMigrations({
           pool,
           migrationsDir: tempDir,
+          tableName: testTableName,
           lockName: testLockName
         })
       ).rejects.toThrow(/Checksum mismatch for migration 1/);
@@ -285,11 +299,12 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
 
     it('baselines existing schema and marks migrations without re-executing DDL', async () => {
       const canonicalDir = getDefaultMigrationsDir();
+      const baselineTableName = `schema_migrations_bl_${Date.now()}`;
 
       const conn = await pool.getConnection();
       try {
-        await ensureMigrationsTable(conn);
-        await conn.query('DELETE FROM schema_migrations');
+        await ensureMigrationsTable(conn, baselineTableName);
+        await conn.query(`DELETE FROM \`${baselineTableName}\``);
       } finally {
         conn.release();
       }
@@ -298,6 +313,7 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       const baselineResult = await baselineDatabase({
         pool,
         migrationsDir: canonicalDir,
+        tableName: baselineTableName,
         lockName: testLockName,
         targetVersions: [1, 2, 3, 4]
       });
@@ -305,20 +321,22 @@ describe('Database Migration Engine (TASK-101 / FND-005)', () => {
       expect(baselineResult.length).toBe(4);
       expect(baselineResult.every((r) => !r.alreadyApplied)).toBe(true);
 
-      // Check status: all 4 are APPLIED
+      // Check status: 4 are APPLIED (001-004), 1 is PENDING (005_recovery_schema)
       const status = await getMigrationStatus({
         pool,
         migrationsDir: canonicalDir,
+        tableName: baselineTableName,
         lockName: testLockName
       });
       expect(status.appliedCount).toBe(4);
-      expect(status.pendingCount).toBe(0);
+      expect(status.pendingCount).toBe(1);
       expect(status.hasMismatch).toBe(false);
 
       // Re-running baseline is idempotent
       const repeatBaseline = await baselineDatabase({
         pool,
         migrationsDir: canonicalDir,
+        tableName: baselineTableName,
         lockName: testLockName,
         targetVersions: [1, 2, 3, 4]
       });

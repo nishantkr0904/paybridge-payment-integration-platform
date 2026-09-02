@@ -65,6 +65,7 @@ export interface BaselineResult {
 export interface MigratorOptions {
   pool?: Pool;
   migrationsDir?: string;
+  tableName?: string;
   lockName?: string;
   lockTimeoutSeconds?: number;
 }
@@ -78,6 +79,7 @@ export interface BaselineOptions extends MigratorOptions {
   targetVersions?: number[];
 }
 
+const DEFAULT_TABLE_NAME = 'schema_migrations';
 const DEFAULT_LOCK_NAME = 'paybridge_migrations_lock';
 const DEFAULT_LOCK_TIMEOUT = 10;
 
@@ -264,9 +266,9 @@ export async function discoverMigrations(migrationsDir: string): Promise<Migrati
   return migrations;
 }
 
-export async function ensureMigrationsTable(connection: PoolConnection): Promise<void> {
+export async function ensureMigrationsTable(connection: PoolConnection, tableName = DEFAULT_TABLE_NAME): Promise<void> {
   await connection.query(`
-    CREATE TABLE IF NOT EXISTS schema_migrations (
+    CREATE TABLE IF NOT EXISTS \`${tableName}\` (
       version INT NOT NULL,
       name VARCHAR(255) NOT NULL,
       checksum CHAR(64) NOT NULL,
@@ -314,15 +316,16 @@ async function withAdvisoryLock<T>(
 export async function getMigrationStatus(options?: MigratorOptions): Promise<MigrationStatusReport> {
   const pool = options?.pool || defaultPool;
   const migrationsDir = options?.migrationsDir || getDefaultMigrationsDir();
+  const tableName = options?.tableName || DEFAULT_TABLE_NAME;
   const lockName = options?.lockName || DEFAULT_LOCK_NAME;
   const lockTimeoutSeconds = options?.lockTimeoutSeconds ?? DEFAULT_LOCK_TIMEOUT;
 
   return withAdvisoryLock(pool, lockName, lockTimeoutSeconds, async (connection) => {
-    await ensureMigrationsTable(connection);
+    await ensureMigrationsTable(connection, tableName);
     const discovered = await discoverMigrations(migrationsDir);
 
     const [rows] = await connection.query<MigrationRecord[]>(
-      'SELECT version, name, checksum, applied_at, execution_time_ms FROM schema_migrations ORDER BY version ASC'
+      `SELECT version, name, checksum, applied_at, execution_time_ms FROM \`${tableName}\` ORDER BY version ASC`
     );
 
     const appliedMap = new Map<number, MigrationRecord>();
@@ -378,15 +381,16 @@ export async function getMigrationStatus(options?: MigratorOptions): Promise<Mig
 export async function runMigrations(options?: MigratorOptions): Promise<MigrationResult[]> {
   const pool = options?.pool || defaultPool;
   const migrationsDir = options?.migrationsDir || getDefaultMigrationsDir();
+  const tableName = options?.tableName || DEFAULT_TABLE_NAME;
   const lockName = options?.lockName || DEFAULT_LOCK_NAME;
   const lockTimeoutSeconds = options?.lockTimeoutSeconds ?? DEFAULT_LOCK_TIMEOUT;
 
   return withAdvisoryLock(pool, lockName, lockTimeoutSeconds, async (connection) => {
-    await ensureMigrationsTable(connection);
+    await ensureMigrationsTable(connection, tableName);
     const discovered = await discoverMigrations(migrationsDir);
 
     const [rows] = await connection.query<MigrationRecord[]>(
-      'SELECT version, name, checksum FROM schema_migrations ORDER BY version ASC'
+      `SELECT version, name, checksum FROM \`${tableName}\` ORDER BY version ASC`
     );
 
     const appliedMap = new Map<number, MigrationRecord>();
@@ -428,7 +432,7 @@ export async function runMigrations(options?: MigratorOptions): Promise<Migratio
       const executionTimeMs = Math.max(1, Date.now() - startTime);
 
       await connection.query(
-        'INSERT INTO schema_migrations (version, name, checksum, execution_time_ms) VALUES (?, ?, ?, ?)',
+        `INSERT INTO \`${tableName}\` (version, name, checksum, execution_time_ms) VALUES (?, ?, ?, ?)`,
         [m.version, m.name, m.upChecksum, executionTimeMs]
       );
 
@@ -447,13 +451,14 @@ export async function runMigrations(options?: MigratorOptions): Promise<Migratio
 export async function rollbackMigrations(options?: RollbackOptions): Promise<RollbackResult[]> {
   const pool = options?.pool || defaultPool;
   const migrationsDir = options?.migrationsDir || getDefaultMigrationsDir();
+  const tableName = options?.tableName || DEFAULT_TABLE_NAME;
   const lockName = options?.lockName || DEFAULT_LOCK_NAME;
   const lockTimeoutSeconds = options?.lockTimeoutSeconds ?? DEFAULT_LOCK_TIMEOUT;
   const toVersion = options?.to;
   const step = options?.step ?? (toVersion === undefined ? 1 : undefined);
 
   return withAdvisoryLock(pool, lockName, lockTimeoutSeconds, async (connection) => {
-    await ensureMigrationsTable(connection);
+    await ensureMigrationsTable(connection, tableName);
     const discovered = await discoverMigrations(migrationsDir);
     const discoveredMap = new Map<number, MigrationFile>();
     for (const m of discovered) {
@@ -461,7 +466,7 @@ export async function rollbackMigrations(options?: RollbackOptions): Promise<Rol
     }
 
     const [appliedRows] = await connection.query<MigrationRecord[]>(
-      'SELECT version, name, checksum FROM schema_migrations ORDER BY version DESC'
+      `SELECT version, name, checksum FROM \`${tableName}\` ORDER BY version DESC`
     );
 
     // Verify checksums of applied migrations
@@ -507,7 +512,7 @@ export async function rollbackMigrations(options?: RollbackOptions): Promise<Rol
         }
       }
 
-      await connection.query('DELETE FROM schema_migrations WHERE version = ?', [record.version]);
+      await connection.query(`DELETE FROM \`${tableName}\` WHERE version = ?`, [record.version]);
 
       results.push({
         version: record.version,
@@ -522,12 +527,13 @@ export async function rollbackMigrations(options?: RollbackOptions): Promise<Rol
 export async function baselineDatabase(options?: BaselineOptions): Promise<BaselineResult[]> {
   const pool = options?.pool || defaultPool;
   const migrationsDir = options?.migrationsDir || getDefaultMigrationsDir();
+  const tableName = options?.tableName || DEFAULT_TABLE_NAME;
   const lockName = options?.lockName || DEFAULT_LOCK_NAME;
   const lockTimeoutSeconds = options?.lockTimeoutSeconds ?? DEFAULT_LOCK_TIMEOUT;
   const targetVersions = options?.targetVersions || [1, 2, 3, 4];
 
   return withAdvisoryLock(pool, lockName, lockTimeoutSeconds, async (connection) => {
-    await ensureMigrationsTable(connection);
+    await ensureMigrationsTable(connection, tableName);
     const discovered = await discoverMigrations(migrationsDir);
     const discoveredMap = new Map<number, MigrationFile>();
     for (const m of discovered) {
@@ -554,7 +560,7 @@ export async function baselineDatabase(options?: BaselineOptions): Promise<Basel
     }
 
     const [appliedRows] = await connection.query<MigrationRecord[]>(
-      'SELECT version, name, checksum FROM schema_migrations ORDER BY version ASC'
+      `SELECT version, name, checksum FROM \`${tableName}\` ORDER BY version ASC`
     );
     const appliedMap = new Map<number, MigrationRecord>();
     for (const row of appliedRows) {
@@ -578,7 +584,7 @@ export async function baselineDatabase(options?: BaselineOptions): Promise<Basel
         });
       } else {
         await connection.query(
-          'INSERT INTO schema_migrations (version, name, checksum, execution_time_ms) VALUES (?, ?, ?, 0)',
+          `INSERT INTO \`${tableName}\` (version, name, checksum, execution_time_ms) VALUES (?, ?, ?, 0)`,
           [m.version, m.name, m.upChecksum]
         );
         results.push({
