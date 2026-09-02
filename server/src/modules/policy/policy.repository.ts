@@ -99,79 +99,88 @@ export async function findPoliciesByMerchantId(merchantId: number): Promise<Poli
  * If isActive is true, atomically deactivates any existing active policies for this merchant.
  */
 export async function createPolicy(merchantId: number, input: CreatePolicyInput): Promise<Policy> {
-  const conn = await pool.getConnection();
+  const maxAttempts = 3;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const conn = await pool.getConnection();
+    try {
+      await conn.beginTransaction();
 
-  try {
-    await conn.beginTransaction();
+      // Lock the parent user record to serialize operations for this merchant without index gap locks
+      await conn.query(`SELECT id FROM users WHERE id = ? FOR UPDATE`, [merchantId]);
 
-    // Lock the parent user record to serialize operations for this merchant without index gap locks
-    await conn.query(`SELECT id FROM users WHERE id = ? FOR UPDATE`, [merchantId]);
-
-    // Determine the next sequential version number for this merchant
-    const [versionRows] = await conn.query<(RowDataPacket & { next_version: number })[]>(
-      `SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM policies WHERE merchant_id = ?`,
-      [merchantId]
-    );
-    const nextVersion = versionRows[0]?.next_version ?? 1;
-
-    const isActive = input.isActive !== undefined ? input.isActive : true;
-
-    // If this policy is active, deactivate existing active policies for the merchant
-    if (isActive) {
-      await conn.query(
-        `UPDATE policies SET is_active = FALSE WHERE merchant_id = ? AND is_active = TRUE`,
+      // Determine the next sequential version number for this merchant
+      const [versionRows] = await conn.query<(RowDataPacket & { next_version: number })[]>(
+        `SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM policies WHERE merchant_id = ?`,
         [merchantId]
       );
+      const nextVersion = versionRows[0]?.next_version ?? 1;
+
+      const isActive = input.isActive !== undefined ? input.isActive : true;
+
+      // If this policy is active, deactivate existing active policies for the merchant
+      if (isActive) {
+        await conn.query(
+          `UPDATE policies SET is_active = FALSE WHERE merchant_id = ? AND is_active = TRUE`,
+          [merchantId]
+        );
+      }
+
+      const autonomyTier = input.autonomyTier || 'T1';
+      const maxRetries = input.maxRetries !== undefined ? input.maxRetries : 3;
+      const maxContacts = input.maxContactsPerCustomerPerWeek !== undefined ? input.maxContactsPerCustomerPerWeek : 3;
+      const dailyBudget = input.dailyBudgetMinorUnits !== undefined ? input.dailyBudgetMinorUnits : 0;
+      const maxIncentive = input.maxIncentivePercent !== undefined ? input.maxIncentivePercent : 0.0;
+      const quietHoursStart = input.quietHoursStart ?? null;
+      const quietHoursEnd = input.quietHoursEnd ?? null;
+      const timezone = input.timezone || 'UTC';
+
+      const [insertResult] = await conn.query<ResultSetHeader>(
+        `INSERT INTO policies (
+          merchant_id, autonomy_tier, max_retries, max_contacts_per_customer_per_week,
+          daily_budget_minor_units, max_incentive_percent, quiet_hours_start, quiet_hours_end,
+          timezone, is_active, version
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          merchantId,
+          autonomyTier,
+          maxRetries,
+          maxContacts,
+          dailyBudget,
+          maxIncentive,
+          quietHoursStart,
+          quietHoursEnd,
+          timezone,
+          isActive,
+          nextVersion
+        ]
+      );
+
+      const [rows] = await conn.query<PolicyRow[]>(
+        `SELECT * FROM policies WHERE id = ? AND merchant_id = ?`,
+        [insertResult.insertId, merchantId]
+      );
+
+      await conn.commit();
+
+      if (!rows[0]) {
+        throw new Error('Failed to retrieve created policy');
+      }
+
+      return toPolicy(rows[0]);
+    } catch (error: unknown) {
+      await conn.rollback();
+      const err = error as { code?: string; errno?: number };
+      const isDeadlock = err?.code === 'ER_LOCK_DEADLOCK' || err?.errno === 1213;
+      if (isDeadlock && attempt < maxAttempts) {
+        await new Promise((res) => setTimeout(res, 20 * attempt));
+        continue;
+      }
+      throw error;
+    } finally {
+      conn.release();
     }
-
-    const autonomyTier = input.autonomyTier || 'T1';
-    const maxRetries = input.maxRetries !== undefined ? input.maxRetries : 3;
-    const maxContacts = input.maxContactsPerCustomerPerWeek !== undefined ? input.maxContactsPerCustomerPerWeek : 3;
-    const dailyBudget = input.dailyBudgetMinorUnits !== undefined ? input.dailyBudgetMinorUnits : 0;
-    const maxIncentive = input.maxIncentivePercent !== undefined ? input.maxIncentivePercent : 0.0;
-    const quietHoursStart = input.quietHoursStart ?? null;
-    const quietHoursEnd = input.quietHoursEnd ?? null;
-    const timezone = input.timezone || 'UTC';
-
-    const [insertResult] = await conn.query<ResultSetHeader>(
-      `INSERT INTO policies (
-        merchant_id, autonomy_tier, max_retries, max_contacts_per_customer_per_week,
-        daily_budget_minor_units, max_incentive_percent, quiet_hours_start, quiet_hours_end,
-        timezone, is_active, version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        merchantId,
-        autonomyTier,
-        maxRetries,
-        maxContacts,
-        dailyBudget,
-        maxIncentive,
-        quietHoursStart,
-        quietHoursEnd,
-        timezone,
-        isActive,
-        nextVersion
-      ]
-    );
-
-    const [rows] = await conn.query<PolicyRow[]>(
-      `SELECT * FROM policies WHERE id = ? AND merchant_id = ?`,
-      [insertResult.insertId, merchantId]
-    );
-
-    await conn.commit();
-
-    if (!rows[0]) {
-      throw new Error('Failed to retrieve created policy');
-    }
-
-    return toPolicy(rows[0]);
-  } catch (error) {
-    await conn.rollback();
-    throw error;
-  } finally {
-    conn.release();
   }
+  throw new Error('createPolicy failed after max deadlock retry attempts');
 }
 
 /**

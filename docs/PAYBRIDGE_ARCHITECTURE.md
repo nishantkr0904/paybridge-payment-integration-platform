@@ -136,8 +136,9 @@ graph TD
 - **Dependencies:** Operational MySQL, RabbitMQ (`EXCHANGES.PAYMENT`, `EXCHANGES.WEBHOOK`, `EXCHANGES.DLX`), Redis (Distributed Locks).
 
 ### Recovery Service (New)
-- **Purpose:** Orchestrate the lifecycle of a failed transaction.
-- **Responsibilities:** Maintain the Case State Machine, schedule actions, trigger diagnosis, handle operator overrides.
+- **Purpose:** Orchestrate the lifecycle of a failed transaction, prioritize cases, and quantify recoverable leakage.
+- **Responsibilities:** Maintain the 12-state Case State Machine, calculate deterministic multi-factor priority scores, enforce per-merchant fair round-robin scheduling, execute explicit load shedding under capacity constraints, compute the 0-variance Recoverable Revenue & Leakage Ledger, schedule actions, trigger diagnosis, and handle operator overrides.
+- **Dependencies:** Operational MySQL (`cases`, `case_events`), RabbitMQ (`recovery_ingestion_queue`), Redis.
 
 ### AI Agent Service (New)
 - **Purpose:** Encapsulate all non-deterministic LLM interactions.

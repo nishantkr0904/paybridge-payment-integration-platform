@@ -1,5 +1,5 @@
 /* ------------------------------------------------------------------ */
-/*  Recovery Case & Lifecycle Types (RCV-001 / TASK-203)             */
+/*  Recovery Case & Lifecycle Types (RCV-001 / RCV-002 / TASK-204)  */
 /* ------------------------------------------------------------------ */
 
 export type CaseStatus =
@@ -92,4 +92,73 @@ export interface PaymentFailedEvent {
   gatewayResponse?: Record<string, unknown>;
   correlationId: string;
   timestamp?: string;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Prioritisation & Revenue Ledger Types (RCV-002)                   */
+/* ------------------------------------------------------------------ */
+
+export interface PriorityBreakdown {
+  valueScore: number;
+  ageScore: number;
+  tierScore: number;
+  categoryScore: number;
+  propensityScore: number;
+}
+
+export interface PriorityScore {
+  score: number;
+  formula: string;
+  derivationBasis: string;
+  breakdown: PriorityBreakdown;
+  isAddressable: boolean;
+}
+
+export interface PrioritizedCase {
+  case: RecoveryCase;
+  priority: PriorityScore;
+}
+
+export interface QueueMetrics {
+  queueDepth: number;
+  oldestCaseAgeSeconds: number;
+  activeCasesByStatus: Record<string, number>;
+  shedVolumeTotal: number;
+}
+
+export interface CategoryBreakdown {
+  failureCategory: string;
+  isAddressable: boolean;
+  caseCount: number;
+  detectedMinorUnits: number;
+  recoveredMinorUnits: number;
+  suppressedMinorUnits: number;
+  unrecoveredMinorUnits: number;
+  inFlightMinorUnits: number;
+}
+
+export interface RevenueLedger {
+  merchantId: number;
+  currency: string;
+  period: {
+    startDate?: Date;
+    endDate?: Date;
+  };
+  totals: {
+    totalDetectedMinorUnits: number;
+    addressableMinorUnits: number;
+    nonAddressableMinorUnits: number;
+    recoveredMinorUnits: number;
+    unrecoveredMinorUnits: number;
+    suppressedMinorUnits: number;
+    inFlightMinorUnits: number;
+    totalCaseCount: number;
+  };
+  byCategory: CategoryBreakdown[];
+}
+
+export interface LedgerFilters {
+  startDate?: Date;
+  endDate?: Date;
+  currency?: string;
 }

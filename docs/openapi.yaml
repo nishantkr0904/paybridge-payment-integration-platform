@@ -319,3 +319,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PolicyEvaluationResult'
+  /merchants/recovery/ledger:
+    get:
+      summary: Retrieve Recoverable Revenue & Leakage Ledger for the authenticated merchant
+      parameters:
+        - in: query
+          name: startDate
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: endDate
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: currency
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Recoverable revenue ledger with exact reconciliation breakdown
+  /merchants/recovery/queue:
+    get:
+      summary: Retrieve prioritized recovery case queue with fair scheduling
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+        - in: query
+          name: maxPerMerchant
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Prioritized recovery cases with deterministic scores
+  /merchants/recovery/metrics:
+    get:
+      summary: Retrieve queue depth, oldest case age, and shed volume metrics
+      responses:
+        '200':
+          description: Queue operational metrics
+  /merchants/recovery/shed:
+    post:
+      summary: Explicitly execute load shedding when queue depth exceeds capacity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - capacityLimit
+              properties:
+                capacityLimit:
+                  type: integer
+      responses:
+        '200':
+          description: Shed cases result with audit count

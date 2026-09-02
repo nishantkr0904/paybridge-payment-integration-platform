@@ -202,3 +202,83 @@ merchantRouter.patch('/policies/:id/deactivate', async (req, res, next) => {
     next(error);
   }
 });
+
+/* ------------------------------------------------------------------ */
+/*  Recovery Prioritisation & Revenue Ledger Routes (RCV-002)         */
+/* ------------------------------------------------------------------ */
+
+const ledgerQuerySchema = z.object({
+  startDate: z.string().datetime().optional(),
+  endDate: z.string().datetime().optional(),
+  currency: z.string().length(3).optional()
+});
+
+const queueQuerySchema = z.object({
+  limit: z.coerce.number().int().positive().max(500).default(50),
+  maxPerMerchant: z.coerce.number().int().positive().optional()
+});
+
+const loadShedSchema = z.object({
+  capacityLimit: z.number().int().nonnegative().max(100000)
+});
+
+/* GET /api/merchants/recovery/ledger — get recoverable revenue & leakage ledger */
+merchantRouter.get('/recovery/ledger', async (req, res, next) => {
+  try {
+    const query = ledgerQuerySchema.parse(req.query);
+    const filters = {
+      startDate: query.startDate ? new Date(query.startDate) : undefined,
+      endDate: query.endDate ? new Date(query.endDate) : undefined,
+      currency: query.currency
+    };
+    const ledger = await (await import('../recovery/case.service.js')).getRevenueLedger(
+      req.user!.id,
+      filters
+    );
+    res.json(ledger);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/* GET /api/merchants/recovery/queue — get prioritized recovery cases */
+merchantRouter.get('/recovery/queue', async (req, res, next) => {
+  try {
+    const query = queueQuerySchema.parse(req.query);
+    const prioritizedQueue = await (
+      await import('../recovery/case.service.js')
+    ).getPrioritizedQueue(req.user!.id, {
+      limit: query.limit,
+      maxPerMerchant: query.maxPerMerchant
+    });
+    res.json(prioritizedQueue);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/* GET /api/merchants/recovery/metrics — get queue depth, oldest age, and shed volume */
+merchantRouter.get('/recovery/metrics', async (req, res, next) => {
+  try {
+    const metrics = await (await import('../recovery/case.service.js')).getQueueMetrics(
+      req.user!.id
+    );
+    res.json(metrics);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/* POST /api/merchants/recovery/shed — execute load shedding when backlog exceeds capacity */
+merchantRouter.post('/recovery/shed', async (req, res, next) => {
+  try {
+    const input = loadShedSchema.parse(req.body);
+    const result = await (await import('../recovery/case.service.js')).shedExcessBacklog(
+      input.capacityLimit,
+      req.id?.toString()
+    );
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});

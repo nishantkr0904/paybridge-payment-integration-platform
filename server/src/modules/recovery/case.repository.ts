@@ -8,6 +8,7 @@ import type {
   CaseStatus,
   CreateCaseEventInput,
   CreateCaseInput,
+  LedgerFilters,
   RecoveryCase,
   TransitionCaseInput
 } from './case.types.js';
@@ -138,6 +139,61 @@ export async function findCasesByMerchantId(merchantId: number): Promise<Recover
   return rows.map(toCase);
 }
 
+export async function findActiveCases(merchantId?: number): Promise<RecoveryCase[]> {
+  const activeStatuses = [
+    'detected',
+    'diagnosing',
+    'scoring',
+    'deciding',
+    'awaiting_approval',
+    'executing',
+    'awaiting_outcome'
+  ];
+
+  if (merchantId) {
+    const [rows] = await pool.query<CaseRow[]>(
+      `SELECT * FROM cases WHERE merchant_id = ? AND status IN (?) ORDER BY id ASC`,
+      [merchantId, activeStatuses]
+    );
+    return rows.map(toCase);
+  }
+
+  const [rows] = await pool.query<CaseRow[]>(
+    `SELECT * FROM cases WHERE status IN (?) ORDER BY id ASC`,
+    [activeStatuses]
+  );
+  return rows.map(toCase);
+}
+
+export async function findCasesWithFilters(
+  merchantId: number,
+  filters?: LedgerFilters
+): Promise<RecoveryCase[]> {
+  const conditions: string[] = ['merchant_id = ?'];
+  const params: unknown[] = [merchantId];
+
+  if (filters?.startDate) {
+    conditions.push('created_at >= ?');
+    params.push(filters.startDate);
+  }
+
+  if (filters?.endDate) {
+    conditions.push('created_at <= ?');
+    params.push(filters.endDate);
+  }
+
+  if (filters?.currency) {
+    conditions.push('currency = ?');
+    params.push(filters.currency);
+  }
+
+  const [rows] = await pool.query<CaseRow[]>(
+    `SELECT * FROM cases WHERE ${conditions.join(' AND ')} ORDER BY id DESC`,
+    params
+  );
+  return rows.map(toCase);
+}
+
 export async function findCaseEventsByCaseId(
   caseId: number,
   merchantId: number
@@ -147,6 +203,21 @@ export async function findCaseEventsByCaseId(
     { caseId, merchantId }
   );
   return rows.map(toCaseEvent);
+}
+
+export async function getShedEventCount(merchantId?: number): Promise<number> {
+  if (merchantId) {
+    const [rows] = await pool.query<RowDataPacket[]>(
+      `SELECT COUNT(*) as cnt FROM case_events WHERE merchant_id = :merchantId AND to_status = 'suppressed' AND reason LIKE '%CAPACITY_LOAD_SHED%'`,
+      { merchantId }
+    );
+    return Number(rows[0]?.cnt || 0);
+  }
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COUNT(*) as cnt FROM case_events WHERE to_status = 'suppressed' AND reason LIKE '%CAPACITY_LOAD_SHED%'`
+  );
+  return Number(rows[0]?.cnt || 0);
 }
 
 /* ------------------------------------------------------------------ */
@@ -308,6 +379,68 @@ export async function transitionCaseStatus(
     await conn.commit();
 
     return toCase(updatedRows[0]!);
+  } catch (error) {
+    await conn.rollback();
+    throw error;
+  } finally {
+    conn.release();
+  }
+}
+
+/**
+ * Bulk sheds cases by transitioning them to 'suppressed' status with a recorded shed event.
+ * (RCV-002 Requirement 7)
+ */
+export async function bulkShedCases(
+  caseIds: number[],
+  merchantId: number,
+  reason: string,
+  correlationId: string
+): Promise<RecoveryCase[]> {
+  if (caseIds.length === 0) return [];
+
+  const conn = await pool.getConnection();
+
+  try {
+    await conn.beginTransaction();
+
+    const [caseRows] = await conn.query<CaseRow[]>(
+      `SELECT * FROM cases WHERE id IN (?) AND merchant_id = ? FOR UPDATE`,
+      [caseIds, merchantId]
+    );
+
+    const updatedCases: RecoveryCase[] = [];
+
+    for (const row of caseRows) {
+      const currentCase = toCase(row);
+      validateTransition(currentCase.status, 'suppressed');
+
+      await conn.query(
+        `UPDATE cases SET status = 'suppressed' WHERE id = ? AND merchant_id = ?`,
+        [currentCase.id, merchantId]
+      );
+
+      await conn.query<ResultSetHeader>(
+        `INSERT INTO case_events (
+          case_id, merchant_id, from_status, to_status,
+          actor_type, actor_id, reason, payload, correlation_id
+        ) VALUES (?, ?, ?, 'suppressed', 'system', 'queue_load_shedder', ?, ?, ?)`,
+        [
+          currentCase.id,
+          merchantId,
+          currentCase.status,
+          reason,
+          JSON.stringify({ shedAt: new Date().toISOString() }),
+          correlationId
+        ]
+      );
+
+      currentCase.status = 'suppressed';
+      updatedCases.push(currentCase);
+    }
+
+    await conn.commit();
+    return updatedCases;
   } catch (error) {
     await conn.rollback();
     throw error;
