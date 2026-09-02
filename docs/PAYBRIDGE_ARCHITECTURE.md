@@ -34,12 +34,13 @@ The system runs as four distinct processes sharing a single codebase:
 
 ### Communication & Database
 - **Tight Coupling:** Workers directly import repository layers instead of communicating via APIs or gRPC.
-- **Database:** MySQL 8.4 is the sole persistence layer, managed by raw SQL scripts without a migration tool. Tenant isolation is enforced inconsistently in the service layer (a violation of invariant I9).
-- **Queues:** RabbitMQ uses direct exchanges with persistent messages and a basic DLQ topology.
-- **Caching & Locks:** Redis 7 is present but used *only* for unsafe, non-atomic distributed locks; no actual caching exists.
+- **Database:** MySQL 8.4 is the sole persistence layer, storing operational entities (`merchants`, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`).
+- **Queues:** RabbitMQ uses direct exchanges with persistent messages, worker `prefetch(1)`, and a dead-letter exchange (DLX) routing to `payment_dlq`.
+- **Caching & Locks:** Redis 7 provides safe atomic distributed locks using unique UUID owner tokens and Lua compare-and-delete release scripts (`lock:order:${orderRef}`, `lock:worker:txn:${transactionId}`).
 
-### Technical Debt & Gaps
-The current architecture lacks idempotency keys, safe distributed locking, graceful shutdown, automated testing, and comprehensive observability (trace IDs are absent). These must be remediated as a prerequisite for the AI transformation.
+### Technical Debt Remediated & Remaining Gaps
+- **Remediated in Phase 0:** Safe distributed locking (Lua CAS release, D2 fixed), durable MySQL-backed request idempotency (`idempotency_keys`), hardened payment worker duplicate-delivery guards, and automated test suites (52 tests across 5 test suites in Vitest).
+- **Remaining Gaps:** Graceful shutdown (`SIGTERM`/`SIGINT` handling), correlation ID propagation across HTTP/MQ boundaries, rate limiting, and database migration tooling. These are scheduled in upcoming roadmap milestones.
 
 ---
 
@@ -125,9 +126,14 @@ graph TD
 - **Failure Modes:** If down, no synchronous API traffic flows. Highly available via horizontal scaling.
 
 ### Payment Service
-- **Purpose:** Core ledger and transaction processing.
-- **Responsibilities:** Interface with external payment gateways, manage transaction state, enforce synchronous validation.
-- **Dependencies:** Operational MySQL, Redis (Locks).
+- **Purpose:** Core order management, idempotency enforcement, and payment lifecycle orchestration.
+- **Responsibilities:** Validate order states, execute durable request-level idempotency via MySQL `idempotency_keys` table with SHA-256 fingerprinting, acquire ownership-safe Redis distributed order locks (`lock:order:${orderRef}`), insert initial transaction records (`status: 'initiated'`), and dispatch payment jobs to RabbitMQ.
+- **Dependencies:** Operational MySQL, Redis (Distributed Locks).
+
+### Payment Worker
+- **Purpose:** Asynchronous payment execution and simulated gateway processing.
+- **Responsibilities:** Consume payment jobs from `payment_processing_queue` (prefetch=1), inspect durable transaction state in MySQL (`findTransactionById`), acknowledge duplicate deliveries of terminal transactions (`status: 'success' || 'failed'`) without re-invoking gateway side effects, acquire worker-level distributed lock (`lock:worker:txn:${transactionId}`), simulate gateway responses, persist transaction/order updates to MySQL, publish webhook events, and manage retry/DLQ progression (`payment_dlq`).
+- **Dependencies:** Operational MySQL, RabbitMQ (`EXCHANGES.PAYMENT`, `EXCHANGES.WEBHOOK`, `EXCHANGES.DLX`), Redis (Distributed Locks).
 
 ### Recovery Service (New)
 - **Purpose:** Orchestrate the lifecycle of a failed transaction.
@@ -176,15 +182,27 @@ The system implements a provider abstraction layer. If the primary provider (e.g
 
 ### RabbitMQ Topology
 - **Exchanges:** 
-  - `domain.events` (Topic Exchange) - For broadcasting state changes (`order.created`, `payment.failed`, `case.resolved`).
-  - `domain.commands` (Direct Exchange) - For targeted work (`process.payment`, `deliver.webhook`, `execute.playbook`).
-- **Queues:** Dedicated queues per consumer group with prefetch limits tuned to expected IO latency.
-- **Dead-Letter Queues (DLQ):** Every work queue configures an `x-dead-letter-exchange`. Unprocessable messages (e.g., parsing failures, max retries exceeded) route to the DLQ for operator inspection.
-- **Delay Queues:** Utilizes RabbitMQ Delayed Message Plugin (or TTL queues) for scheduling retries hours or days in advance.
+  - `payment_exchange` (Direct) - Routes checkout payment execution tasks.
+  - `webhook_exchange` (Direct) - Routes webhook delivery notifications.
+  - `dlx_exchange` (Direct) - Dead-letter exchange capturing unprocessable, malformed, or retry-exhausted messages.
+- **Queues:**
+  - `payment_processing_queue` - Consumed by `payment.worker.ts` with `prefetch(1)`.
+  - `webhook_delivery_queue` - Consumed by `webhook.worker.ts`.
+  - `payment_dlq` - Bound to `dlx_exchange` with routing key `payment_dlq_key`.
+- **Worker Execution & Retry Semantics:**
+  - Transient failures are retried up to `MAX_PAYMENT_RETRIES = 3`.
+  - Once retries are exhausted, the database status is marked `failed` and the message is rejected without requeue (`nack(msg, false, false)`), routing it to the DLQ.
 
-### Idempotency & Tracing
-- **Correlation IDs:** Generated at the edge (`X-Request-Id`) and carried in the `headers` of every RabbitMQ message envelope, ensuring distributed tracing across all components.
-- **Idempotency:** The API checks an `Idempotency-Key` header against Redis (`SETNX`). Message consumers enforce idempotency via database unique constraints or state machine transition checks.
+### Idempotency & Concurrency Guarantees
+- **Durable Request Idempotency:** API write requests (`POST /api/payments/orders`, `POST /api/payments/orders/:orderRef/pay`) support `Idempotency-Key` / `x-idempotency-key` headers. A durable record in MySQL `idempotency_keys` with unique key `(merchant_id, idempotency_key)` and SHA-256 canonical body hash prevents duplicate writes, catches payload mismatches with `409 IDEMPOTENCY_KEY_MISMATCH`, isolates concurrent in-flight requests with `409 IDEMPOTENCY_IN_PROGRESS`, and replays cached completed responses.
+- **Distributed Locking:** Redis locks (`lock:order:${orderRef}`, `lock:worker:txn:${transactionId}`) use unique UUID tokens and atomic Lua compare-and-delete scripts to ensure mutex exclusion and eliminate foreign lock deletion (Defect D2 remediated).
+
+### Payment Safety Guarantees & Provider Boundaries
+- **Internal System Guarantees:**
+  - Once a payment transaction reaches a terminal state (`success` or `failed`) in MySQL, any duplicate delivery of the RabbitMQ payment job is safely acknowledged without re-invoking payment side effects or publishing duplicate webhooks.
+  - Concurrent workers attempting to process the same transaction are serialized by the distributed lock; if lock acquisition fails, the message is requeued.
+- **External Payment Provider Limitations:**
+  - If a worker crashes *after* the external payment gateway successfully captures funds but *before* MySQL commits the `success` transaction status, RabbitMQ redelivery will re-execute the gateway charge unless the upstream payment provider supports idempotent transaction references. In production integrations, the provider adapter must pass `txnRef` as the upstream gateway idempotency key.
 
 ---
 
@@ -219,12 +237,12 @@ sequenceDiagram
 ## 9. Database Architecture
 
 ### Separation of Concerns
-1. **Operational Store (MySQL):** 3rd Normal Form schema for core entities (Merchants, Orders, Transactions, Cases). Optimized for ACID transactions and state transitions.
+1. **Operational Store (MySQL):** 3rd Normal Form schema for core entities (`merchants`, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`, `cases`). Optimized for ACID transactions and state transitions.
 2. **Event Store (MySQL / Append-Only):** A dedicated schema where the application role only has `INSERT` and `SELECT` privileges. Stores immutable records of every action, policy decision, and manual override.
-3. **Redis:** Used exclusively for ephemeral data: caching (merchant configurations, API responses), rate limit counters, idempotency keys, and safe atomic distributed locks (via Lua scripts).
+3. **Redis:** Used exclusively for ephemeral data: caching (merchant configurations, API responses), rate limit counters, and safe atomic distributed locks (via Lua CAS scripts).
 
 ### Tenant Isolation
-Isolation is enforced at the repository layer. Every operational query must inherently require `tenant_id` as an argument, making accidental cross-tenant leaks structurally impossible at compile time.
+Isolation is enforced at the repository layer. Every operational query must inherently require `tenant_id` / `merchant_id` as an argument, making accidental cross-tenant leaks structurally impossible at compile time.
 
 ---
 
