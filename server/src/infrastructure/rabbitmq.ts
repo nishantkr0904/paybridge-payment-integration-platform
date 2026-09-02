@@ -9,6 +9,7 @@ export const QUEUES = {
   PAYMENT_PROCESSING: 'payment_processing_queue',
   PAYMENT_DLQ: 'payment_dlq',
   WEBHOOK_DELIVERY: 'webhook_queue',
+  RECOVERY_INGESTION: 'recovery_ingestion_queue',
 };
 
 export const EXCHANGES = {
@@ -35,6 +36,7 @@ export async function connectRabbitMQ() {
     // Setup DLQ
     await channel.assertQueue(QUEUES.PAYMENT_DLQ, { durable: true });
     await channel.bindQueue(QUEUES.PAYMENT_DLQ, EXCHANGES.DLX, 'payment.dlq');
+    await channel.bindQueue(QUEUES.PAYMENT_DLQ, EXCHANGES.DLX, 'recovery.dlq');
 
     // Setup main processing queue with dead-lettering to DLX
     await channel.assertQueue(QUEUES.PAYMENT_PROCESSING, {
@@ -46,6 +48,17 @@ export async function connectRabbitMQ() {
     });
     
     await channel.bindQueue(QUEUES.PAYMENT_PROCESSING, EXCHANGES.PAYMENT, 'payment.process');
+
+    // Setup Recovery Ingestion Queue with dead-lettering to DLX
+    await channel.assertQueue(QUEUES.RECOVERY_INGESTION, {
+      durable: true,
+      arguments: {
+        'x-dead-letter-exchange': EXCHANGES.DLX,
+        'x-dead-letter-routing-key': 'recovery.dlq',
+      },
+    });
+
+    await channel.bindQueue(QUEUES.RECOVERY_INGESTION, EXCHANGES.PAYMENT, 'payment.failed');
 
     // Setup Webhook Exchange and Queue
     await channel.assertExchange(EXCHANGES.WEBHOOK, 'direct', { durable: true });

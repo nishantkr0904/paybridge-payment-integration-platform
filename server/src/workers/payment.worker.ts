@@ -54,6 +54,16 @@ export function simulateGateway(method: string): GatewaySimulationResult {
   };
 }
 
+export function mapFailureReasonToCategory(reason?: string): string {
+  if (!reason) return 'UNKNOWN_DECLINE';
+  const lower = reason.toLowerCase();
+  if (lower.includes('insufficient')) return 'INSUFFICIENT_FUNDS';
+  if (lower.includes('issuer') || lower.includes('declined')) return 'ISSUER_HARD_DECLINE';
+  if (lower.includes('risk') || lower.includes('fraud')) return 'FRAUD_BLOCKED';
+  if (lower.includes('timeout')) return 'GATEWAY_TIMEOUT';
+  return 'GATEWAY_DECLINED';
+}
+
 export interface PaymentChannel {
   ack(message: amqp.Message, allUpTo?: boolean): void;
   nack(message: amqp.Message, allUpTo?: boolean, requeue?: boolean): void;
@@ -199,7 +209,38 @@ export async function handlePaymentMessage(
 
     await updateOrderStatus(orderId, merchantId, finalOrderStatus);
 
-    // 5. Publish Webhook Event
+    // 5. Publish Recovery and Webhook Events
+    if (!result.success) {
+      const failurePayload = {
+        eventType: 'payment.failed',
+        merchantId,
+        orderId,
+        transactionId,
+        orderRef,
+        txnRef: txnRef || transaction.txnRef,
+        amount: amount ?? transaction.amount,
+        currency: 'INR',
+        failureCategory: result.failureReason ? mapFailureReasonToCategory(result.failureReason) : 'UNKNOWN_DECLINE',
+        failureReason: result.failureReason,
+        gatewayResponse: result.gatewayResponse,
+        timestamp: new Date().toISOString()
+      };
+
+      channel.publish(
+        EXCHANGES.PAYMENT,
+        'payment.failed',
+        Buffer.from(JSON.stringify(failurePayload)),
+        {
+          persistent: true,
+          headers: {
+            'x-correlation-id': correlationId,
+            traceId: correlationId
+          },
+          correlationId
+        }
+      );
+    }
+
     const webhookPayload = {
       merchantId,
       transactionId,
