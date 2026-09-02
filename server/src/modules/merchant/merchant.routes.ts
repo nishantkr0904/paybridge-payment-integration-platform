@@ -282,3 +282,25 @@ merchantRouter.post('/recovery/shed', async (req, res, next) => {
     next(error);
   }
 });
+
+/* GET /api/merchants/recovery/cases/:caseId/trace — get sanitized case trace summary (AI-007 / RDB-003) */
+merchantRouter.get('/recovery/cases/:caseId/trace', async (req, res, next) => {
+  try {
+    const caseId = Number(req.params.caseId);
+    const summary = await (await import('../ai/tracing/trace.service.js')).getMerchantTraceSummary(
+      caseId,
+      req.user!.id
+    );
+    if (!summary) {
+      res.status(404).json({
+        statusCode: 404,
+        error: 'TRACE_NOT_FOUND',
+        message: 'No reasoning trace found for this recovery case.'
+      });
+      return;
+    }
+    res.json(summary);
+  } catch (error) {
+    next(error);
+  }
+});

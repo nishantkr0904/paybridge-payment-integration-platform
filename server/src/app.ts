@@ -14,6 +14,7 @@ import { authRouter } from './modules/auth/auth.routes.js';
 import { merchantRouter } from './modules/merchant/merchant.routes.js';
 import { paymentRouter } from './modules/payment/payment.routes.js';
 import { webhookRouter } from './modules/webhook/webhook.routes.js';
+import { traceRouter } from './modules/ai/tracing/trace.routes.js';
 import { logger } from './utils/logger.js';
 
 import { isShuttingDown } from './utils/shutdown.js';
@@ -62,6 +63,8 @@ export function createApp() {
   app.use('/api/merchants', merchantRouter);
   app.use('/api/payments', paymentRouter);
   app.use('/api/webhooks', webhookRouter);
+  app.use('/api/v1/ops/agent-traces', traceRouter);
+  app.use('/api/ai/traces', traceRouter);
 
   // Swagger Documentation
   const swaggerDocument = YAML.load(path.join(process.cwd(), '../docs/openapi.yaml'));

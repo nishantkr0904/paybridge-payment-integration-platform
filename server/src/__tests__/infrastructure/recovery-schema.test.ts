@@ -411,11 +411,12 @@ describe('TASK-102: Event Store & Case Management Schemas (005_recovery_schema)'
 
   describe('Migration Rollback & Reversibility', () => {
     it('cleanly rolls back migration 005 and re-applies it without errors', async () => {
-      // 1. Rollback 1 step (005_recovery_schema)
-      const rollbackResult = await rollbackMigrations({ migrationsDir, step: 1 });
-      expect(rollbackResult.length).toBe(1);
-      expect(rollbackResult[0].version).toBe(5);
-      expect(rollbackResult[0].name).toBe('recovery_schema');
+      // 1. Rollback to version 4 (rolls back 006_agent_trace_schema and 005_recovery_schema)
+      const rollbackResult = await rollbackMigrations({ migrationsDir, step: 2 });
+      expect(rollbackResult.length).toBe(2);
+      const v5Rollback = rollbackResult.find((r) => r.version === 5);
+      expect(v5Rollback).toBeDefined();
+      expect(v5Rollback?.name).toBe('recovery_schema');
 
       // 2. Verify tables are dropped
       const conn = await pool.getConnection();
@@ -434,18 +435,18 @@ describe('TASK-102: Event Store & Case Management Schemas (005_recovery_schema)'
       // 3. Verify status reports 005 as PENDING
       const statusAfterRollback = await getMigrationStatus({ migrationsDir });
       expect(statusAfterRollback.appliedCount).toBe(4);
-      expect(statusAfterRollback.pendingCount).toBe(1);
+      expect(statusAfterRollback.pendingCount).toBe(2);
       const pendingMigration = statusAfterRollback.migrations.find((m) => m.version === 5);
       expect(pendingMigration?.status).toBe('PENDING');
 
-      // 4. Re-apply migration 005
+      // 4. Re-apply migrations
       const reApplyResult = await runMigrations({ migrationsDir });
-      expect(reApplyResult.length).toBe(1);
-      expect(reApplyResult[0].version).toBe(5);
+      expect(reApplyResult.length).toBe(2);
+      expect(reApplyResult.some((r) => r.version === 5)).toBe(true);
 
-      // 5. Verify all 5 migrations are APPLIED
+      // 5. Verify all migrations are APPLIED
       const finalStatus = await getMigrationStatus({ migrationsDir });
-      expect(finalStatus.appliedCount).toBe(5);
+      expect(finalStatus.appliedCount).toBeGreaterThanOrEqual(5);
       expect(finalStatus.pendingCount).toBe(0);
       expect(finalStatus.hasMismatch).toBe(false);
     });
