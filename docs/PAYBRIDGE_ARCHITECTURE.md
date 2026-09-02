@@ -39,8 +39,8 @@ The system runs as four distinct processes sharing a single codebase:
 - **Caching & Locks:** Redis 7 provides safe atomic distributed locks using unique UUID owner tokens and Lua compare-and-delete release scripts (`lock:order:${orderRef}`, `lock:worker:txn:${transactionId}`).
 
 ### Technical Debt Remediated & Remaining Gaps
-- **Remediated in Phase 0:** Safe distributed locking (Lua CAS release, D2 fixed), durable MySQL-backed request idempotency (`idempotency_keys` table with SHA-256 fingerprinting), hardened payment worker duplicate-delivery guards, phased graceful shutdown with in-flight work draining (`server/src/utils/shutdown.ts`), correlation ID propagation across HTTP → RabbitMQ → workers (`server/src/middleware/correlation-id.ts`), custom Prometheus HTTP RED metrics with cardinality protection (`server/src/infrastructure/metrics.ts`, `server/src/middleware/metrics.ts`), Prometheus Compose scraper fix (Defect D1, `docker/prometheus/prometheus.yml`), and comprehensive automated test suites (83 tests across 8 test files in Vitest).
-- **Remaining Gaps:** Rate limiting (Tier 1 WAF/Redis token bucket) and automated database migration tooling (`TASK-101`). These are scheduled in upcoming roadmap milestones.
+- **Remediated in Phase 0 & Phase 1:** Safe distributed locking (Lua CAS release, D2 fixed), durable MySQL-backed request idempotency (`idempotency_keys` table with SHA-256 fingerprinting), hardened payment worker duplicate-delivery guards, phased graceful shutdown with in-flight work draining (`server/src/utils/shutdown.ts`), correlation ID propagation across HTTP → RabbitMQ → workers (`server/src/middleware/correlation-id.ts`), custom Prometheus HTTP RED metrics with cardinality protection (`server/src/infrastructure/metrics.ts`, `server/src/middleware/metrics.ts`), Prometheus Compose scraper fix (Defect D1, `docker/prometheus/prometheus.yml`), versioned database migration engine (`TASK-101` / `FND-005` in `server/src/infrastructure/migrator.ts` and `server/src/database/cli.ts` with `schema_migrations` and advisory locking), and comprehensive automated test suites (97 tests across 9 test files in Vitest).
+- **Remaining Gaps:** Rate limiting (Tier 1 WAF/Redis token bucket). These are scheduled in upcoming roadmap milestones.
 
 ---
 
@@ -240,6 +240,9 @@ sequenceDiagram
 1. **Operational Store (MySQL):** 3rd Normal Form schema for core entities (`merchants`, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`, `cases`). Optimized for ACID transactions and state transitions.
 2. **Event Store (MySQL / Append-Only):** A dedicated schema where the application role only has `INSERT` and `SELECT` privileges. Stores immutable records of every action, policy decision, and manual override.
 3. **Redis:** Used exclusively for ephemeral data: caching (merchant configurations, API responses), rate limit counters, and safe atomic distributed locks (via Lua CAS scripts).
+
+### Schema Migration Framework
+Schema evolution is governed by a versioned migration runner (`database/migrations/`, `server/src/infrastructure/migrator.ts`) with paired `.up.sql` / `.down.sql` scripts, SHA-256 checksum immutability, and MySQL advisory locks (`paybridge_migrations_lock`). Execution history is tracked in `schema_migrations`.
 
 ### Tenant Isolation
 Isolation is enforced at the repository layer. Every operational query must inherently require `tenant_id` / `merchant_id` as an argument, making accidental cross-tenant leaks structurally impossible at compile time.
