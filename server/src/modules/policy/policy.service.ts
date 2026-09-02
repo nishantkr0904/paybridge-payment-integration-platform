@@ -1,4 +1,5 @@
 import { HttpError } from '../../utils/http-error.js';
+import { evaluatePolicy } from './policy.engine.js';
 import {
   activatePolicy as repoActivatePolicy,
   createPolicy as repoCreatePolicy,
@@ -7,7 +8,14 @@ import {
   findPoliciesByMerchantId,
   findPolicyById
 } from './policy.repository.js';
-import type { CreatePolicyInput, Policy, UpdatePolicyInput } from './policy.types.js';
+import type {
+  CreatePolicyInput,
+  EvaluationContext,
+  Policy,
+  PolicyEvaluationResult,
+  ProposedAction,
+  UpdatePolicyInput
+} from './policy.types.js';
 
 /* ------------------------------------------------------------------ */
 /*  Policy Service Operations                                         */
@@ -116,4 +124,17 @@ export async function deactivatePolicy(id: number, merchantId: number): Promise<
   }
 
   return { success: true, message: 'Policy successfully deactivated.' };
+}
+
+/**
+ * Evaluates a proposed recovery action against the authenticated merchant's currently active policy.
+ * Preserves fail-closed boundary and tenant isolation.
+ */
+export async function evaluateProposedAction(
+  merchantId: number,
+  action: ProposedAction,
+  context?: EvaluationContext
+): Promise<PolicyEvaluationResult> {
+  const activePolicy = await findActivePolicyByMerchantId(merchantId);
+  return evaluatePolicy(activePolicy, action, context);
 }

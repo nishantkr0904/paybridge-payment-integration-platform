@@ -104,9 +104,12 @@ export async function createPolicy(merchantId: number, input: CreatePolicyInput)
   try {
     await conn.beginTransaction();
 
-    // Determine the next sequential version number for this merchant under lock
+    // Lock the parent user record to serialize operations for this merchant without index gap locks
+    await conn.query(`SELECT id FROM users WHERE id = ? FOR UPDATE`, [merchantId]);
+
+    // Determine the next sequential version number for this merchant
     const [versionRows] = await conn.query<(RowDataPacket & { next_version: number })[]>(
-      `SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM policies WHERE merchant_id = ? FOR UPDATE`,
+      `SELECT COALESCE(MAX(version), 0) + 1 AS next_version FROM policies WHERE merchant_id = ?`,
       [merchantId]
     );
     const nextVersion = versionRows[0]?.next_version ?? 1;
@@ -181,8 +184,11 @@ export async function activatePolicy(id: number, merchantId: number): Promise<Po
   try {
     await conn.beginTransaction();
 
+    // Lock the parent user record to serialize operations for this merchant
+    await conn.query(`SELECT id FROM users WHERE id = ? FOR UPDATE`, [merchantId]);
+
     const [targetRows] = await conn.query<PolicyRow[]>(
-      `SELECT * FROM policies WHERE id = ? AND merchant_id = ? FOR UPDATE`,
+      `SELECT * FROM policies WHERE id = ? AND merchant_id = ?`,
       [id, merchantId]
     );
 

@@ -5,6 +5,7 @@ import {
   activatePolicy,
   createPolicy,
   deactivatePolicy,
+  evaluateProposedAction,
   getActivePolicy,
   getPolicyById,
   listPolicies,
@@ -36,6 +37,37 @@ const updatePolicySchema = z.object({
   quietHoursEnd: z.string().regex(timeStringRegex, 'Invalid time format (HH:MM or HH:MM:SS)').nullable().optional(),
   timezone: z.string().min(1).max(50).optional(),
   isActive: z.boolean().optional()
+});
+
+const evaluateActionSchema = z.object({
+  action: z.object({
+    actionType: z.enum([
+      'RETRY_PAYMENT',
+      'CUSTOMER_OUTREACH',
+      'OFFER_INCENTIVE',
+      'REQUEST_PAYMENT_METHOD',
+      'ESCALATE_TO_SUPPORT',
+      'CLOSE_CASE'
+    ]),
+    caseRef: z.string().optional(),
+    orderRef: z.string().optional(),
+    costMinorUnits: z.number().int().nonnegative().optional(),
+    incentivePercent: z.number().min(0).max(100).optional(),
+    scheduledAt: z.union([z.string(), z.date()]).optional(),
+    metadata: z.record(z.unknown()).optional()
+  }),
+  context: z
+    .object({
+      evaluationTime: z.coerce.date().optional(),
+      globalAutonomyTier: z.enum(['T0', 'T1', 'T2', 'T3', 'T4']).optional(),
+      currentRetryCount: z.number().int().nonnegative().optional(),
+      contactsThisWeek: z.number().int().nonnegative().optional(),
+      dailySpentMinorUnits: z.number().int().nonnegative().optional(),
+      isTerminalFailure: z.boolean().optional(),
+      failureCategory: z.string().optional(),
+      requiresHumanReview: z.boolean().optional()
+    })
+    .optional()
 });
 
 export const merchantRouter = Router();
@@ -98,6 +130,21 @@ merchantRouter.post('/policies', async (req, res, next) => {
     const input = createPolicySchema.parse(req.body);
     const policy = await createPolicy(req.user!.id, input);
     res.status(201).json(policy);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/* POST /api/merchants/policies/evaluate — evaluate proposed recovery action against active policy */
+merchantRouter.post('/policies/evaluate', async (req, res, next) => {
+  try {
+    const { action, context } = evaluateActionSchema.parse(req.body);
+    const evaluationContext = {
+      ...context,
+      correlationId: req.correlationId
+    };
+    const result = await evaluateProposedAction(req.user!.id, action, evaluationContext);
+    res.json(result);
   } catch (error) {
     next(error);
   }
