@@ -39,8 +39,8 @@ The system runs as four distinct processes sharing a single codebase:
 - **Caching & Locks:** Redis 7 provides safe atomic distributed locks using unique UUID owner tokens and Lua compare-and-delete release scripts (`lock:order:${orderRef}`, `lock:worker:txn:${transactionId}`).
 
 ### Technical Debt Remediated & Remaining Gaps
-- **Remediated in Phase 0:** Safe distributed locking (Lua CAS release, D2 fixed), durable MySQL-backed request idempotency (`idempotency_keys`), hardened payment worker duplicate-delivery guards, and automated test suites (52 tests across 5 test suites in Vitest).
-- **Remaining Gaps:** Graceful shutdown (`SIGTERM`/`SIGINT` handling), correlation ID propagation across HTTP/MQ boundaries, rate limiting, and database migration tooling. These are scheduled in upcoming roadmap milestones.
+- **Remediated in Phase 0:** Safe distributed locking (Lua CAS release, D2 fixed), durable MySQL-backed request idempotency (`idempotency_keys` table with SHA-256 fingerprinting), hardened payment worker duplicate-delivery guards, phased graceful shutdown with in-flight work draining (`server/src/utils/shutdown.ts`), correlation ID propagation across HTTP → RabbitMQ → workers (`server/src/middleware/correlation-id.ts`), and comprehensive automated test suites (71 tests across 7 test files in Vitest).
+- **Remaining Gaps:** Rate limiting (Tier 1 WAF/Redis token bucket), Prometheus/Grafana service-level indicators, and automated database migration tooling (`TASK-101`). These are scheduled in upcoming roadmap milestones.
 
 ---
 
@@ -272,7 +272,7 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 ## 12. Observability Architecture
 
 ### Instrumentation
-- **Structured Logging:** Pino generates JSON logs. Every log line includes `req.id` and `merchant.id`.
+- **Structured Logging & Correlation Propagation:** Express middleware validates/normalizes `x-correlation-id` / `x-request-id` headers (1–128 chars, safe regex charset) or generates ULID fallbacks, setting `req.correlationId` and `x-correlation-id` response headers. Pino generates structured JSON logs containing `correlationId` and `traceId`. RabbitMQ dispatches attach correlation metadata to message headers and AMQP properties. Workers (`payment.worker.ts`, `webhook.worker.ts`, `dlq.worker.ts`) extract correlation context and instantiate contextual child Pino loggers (`logger.child({ correlationId, traceId, ... })`), preserving headers across downstream webhook publications and retries. Note: Full distributed tracing (OpenTelemetry spans/exporters) is a future target capability.
 - **Metrics:** Prometheus scrapes `/metrics` endpoints. Custom SLIs track "Time-to-Recovery", "Policy Veto Rate", and "Agent Latency".
 - **Dashboards:** Grafana visualizes the operational health, SLA breaches, and RabbitMQ queue depths.
 
@@ -301,7 +301,7 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 - **Circuit Breakers:** External HTTP calls (Webhooks, LLM APIs, Payment Gateways) are wrapped in Circuit Breakers to prevent cascading failures.
 - **Timeouts:** Hard timeouts on all synchronous operations.
 - **Graceful Degradation:** If the AI Agent Service is offline, the system degrades to static, rule-based retries. If the UI cannot fetch analytics, core payment routing remains unaffected.
-- **Graceful Shutdown:** `SIGTERM` signals drain active HTTP requests and `nack` unacknowledged RabbitMQ messages before container termination.
+- **Graceful Shutdown & Draining:** `SIGTERM`/`SIGINT` signals initiate phased shutdown via `server/src/utils/shutdown.ts`: Phase 1 flips readiness (`/api/health`) to 503, closes HTTP server connection intake, and cancels RabbitMQ consumer subscriptions (`channel.cancel`). Phase 2 drains in-flight HTTP requests and worker jobs (`Promise.allSettled(activeJobs)`) with a 15-second grace window. Phase 3 closes dependencies in strict order (RabbitMQ → Redis → MySQL pool). An unreferenced 30-second watchdog timer acts as a hard failsafe forcing exit code 1 if teardown hangs. (Unacknowledged messages are not explicitly nacked; broker redelivery occurs automatically upon disconnection if a process terminates before acks settle).
 
 ---
 
