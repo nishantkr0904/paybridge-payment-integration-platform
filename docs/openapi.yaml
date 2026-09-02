@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: PayBridge API
-  description: Payment Integration Platform API
+  description: Payment Integration Platform & Autonomous Revenue Recovery API
   version: 1.0.0
 servers:
   - url: http://localhost:4000/api
@@ -12,6 +12,111 @@ components:
       type: http
       scheme: bearer
       bearerFormat: JWT
+  schemas:
+    Policy:
+      type: object
+      properties:
+        id:
+          type: integer
+        merchantId:
+          type: integer
+        version:
+          type: integer
+        isActive:
+          type: boolean
+        autonomyTier:
+          type: string
+          enum: [T0, T1, T2, T3, T4]
+        maxRetries:
+          type: integer
+        maxContactsPerCustomerPerWeek:
+          type: integer
+        maxIncentivePercent:
+          type: number
+        dailyBudgetMinorUnits:
+          type: integer
+        quietHoursStart:
+          type: string
+        quietHoursEnd:
+          type: string
+        timezone:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    ProposedAction:
+      type: object
+      required:
+        - actionType
+      properties:
+        actionType:
+          type: string
+          enum: [RETRY_PAYMENT, CUSTOMER_OUTREACH, OFFER_INCENTIVE, REQUEST_PAYMENT_METHOD, ESCALATE_TO_SUPPORT, CLOSE_CASE]
+        caseRef:
+          type: string
+        orderRef:
+          type: string
+        costMinorUnits:
+          type: integer
+        incentivePercent:
+          type: number
+        scheduledAt:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+    EvaluationContext:
+      type: object
+      properties:
+        evaluationTime:
+          type: string
+          format: date-time
+        globalAutonomyTier:
+          type: string
+          enum: [T0, T1, T2, T3, T4]
+        currentRetryCount:
+          type: integer
+        contactsThisWeek:
+          type: integer
+        dailySpentMinorUnits:
+          type: integer
+        isTerminalFailure:
+          type: boolean
+        failureCategory:
+          type: string
+        requiresHumanReview:
+          type: boolean
+        correlationId:
+          type: string
+    PolicyEvaluationResult:
+      type: object
+      properties:
+        decision:
+          type: string
+          enum: [APPROVED, REJECTED, REQUIRES_HUMAN]
+        reasonCode:
+          type: string
+        ruleId:
+          type: string
+        message:
+          type: string
+        policyId:
+          type: integer
+        policyVersion:
+          type: integer
+        evaluatedTier:
+          type: string
+          enum: [T0, T1, T2, T3, T4]
+        evaluatedAt:
+          type: string
+          format: date-time
+        proposedAction:
+          $ref: '#/components/schemas/ProposedAction'
+        correlationId:
+          type: string
 security:
   - bearerAuth: []
 paths:
@@ -77,3 +182,140 @@ paths:
       responses:
         '202':
           description: Payment processing accepted
+  /merchants/policies:
+    get:
+      summary: List all policies for the authenticated merchant
+      responses:
+        '200':
+          description: List of policies
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Policy'
+    post:
+      summary: Create a new versioned policy configuration
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                autonomyTier:
+                  type: string
+                  enum: [T0, T1, T2, T3, T4]
+                maxRetries:
+                  type: integer
+                maxContactsPerCustomerPerWeek:
+                  type: integer
+                maxIncentivePercent:
+                  type: number
+                dailyBudgetMinorUnits:
+                  type: integer
+                quietHoursStart:
+                  type: string
+                quietHoursEnd:
+                  type: string
+                timezone:
+                  type: string
+      responses:
+        '201':
+          description: Policy created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+  /merchants/policies/active:
+    get:
+      summary: Get current active policy for the authenticated merchant
+      responses:
+        '200':
+          description: Active policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+        '404':
+          description: No active policy found
+  /merchants/policies/{id}:
+    get:
+      summary: Get policy by ID
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Policy details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
+    put:
+      summary: Update existing policy configuration
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated policy
+  /merchants/policies/{id}/activate:
+    patch:
+      summary: Activate policy (atomically deactivating previous active policy)
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Activated policy
+  /merchants/policies/{id}/deactivate:
+    patch:
+      summary: Deactivate policy
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Deactivated policy
+  /merchants/policies/evaluate:
+    post:
+      summary: Deterministically evaluate a proposed recovery action against merchant active policy
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - action
+              properties:
+                action:
+                  $ref: '#/components/schemas/ProposedAction'
+                context:
+                  $ref: '#/components/schemas/EvaluationContext'
+      responses:
+        '200':
+          description: Evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PolicyEvaluationResult'
