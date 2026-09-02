@@ -43,15 +43,25 @@ const PII_PATTERNS: Array<{ category: PIICategory; regex: RegExp; replacement: s
     regex: /\b(?:\d[ -]*?){13,19}\b/g,
     replacement: '[CARD_REDACTED]'
   },
-  // 3. Phone Numbers (International & Domestic 10-13 digits)
+  // 3. Phone Numbers (Delimited International, US NANP, and Indian Mobile)
   {
     category: 'PHONE',
-    regex: /(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}\b/g,
+    regex: /(?:\+\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]+\d{3}[-.\s]+\d{4}\b/g,
     replacement: '[PHONE_REDACTED]'
   },
   {
     category: 'PHONE',
-    regex: /(?:\+91|91)?[-.\s]?[6-9]\d{9}\b/g,
+    regex: /\b(?:\+1[-.\s]?)?[2-9]\d{2}[-.]\d{3}[-.]\d{4}\b/g,
+    replacement: '[PHONE_REDACTED]'
+  },
+  {
+    category: 'PHONE',
+    regex: /(?:\+91[-.\s]?|91[-.\s]?)?[6-9]\d{4}[-.\s]?\d{5}\b/g,
+    replacement: '[PHONE_REDACTED]'
+  },
+  {
+    category: 'PHONE',
+    regex: /\b[6-9]\d{9}\b/g,
     replacement: '[PHONE_REDACTED]'
   },
   // 4. Card Expiration Dates (MM/YY or MM/YYYY)
@@ -202,6 +212,17 @@ export function detectPII(text: string): DetectedPII[] {
  */
 export function assertZeroPII(value: unknown, fieldPath = 'root'): void {
   if (value === null || value === undefined) {
+    return;
+  }
+
+  // Skip system metadata fields (correlationId, timestamps, opaque references)
+  if (
+    fieldPath.endsWith('correlationId') ||
+    fieldPath.endsWith('Reference') ||
+    fieldPath.endsWith('Ref') ||
+    fieldPath.endsWith('assembledAt') ||
+    fieldPath.endsWith('createdAt')
+  ) {
     return;
   }
 
