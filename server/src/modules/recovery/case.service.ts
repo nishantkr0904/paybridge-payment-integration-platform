@@ -1,6 +1,10 @@
 import { HttpError } from '../../utils/http-error.js';
 import { generateUlid } from '../../utils/ulid.js';
 import {
+  findOrderById,
+  findTransactionById
+} from '../payment/payment.repository.js';
+import {
   createCaseWithEvent,
   findCaseById,
   findCaseByRef,
@@ -28,7 +32,24 @@ import type {
 export async function ingestPaymentFailure(
   event: PaymentFailedEvent
 ): Promise<{ case: RecoveryCase; isNew: boolean }> {
-  // Idempotency check: natural key on (merchantId, transactionId)
+  // 1. Verify tenant-owned transaction/order relationship (SEC-002 / I9)
+  if (event.transactionId) {
+    const txn = await findTransactionById(event.transactionId, event.merchantId);
+    if (!txn) {
+      throw new Error(
+        `Transaction ${event.transactionId} does not exist or does not belong to merchant ${event.merchantId}`
+      );
+    }
+  } else if (event.orderId) {
+    const order = await findOrderById(event.orderId, event.merchantId);
+    if (!order) {
+      throw new Error(
+        `Order ${event.orderId} does not exist or does not belong to merchant ${event.merchantId}`
+      );
+    }
+  }
+
+  // 2. Idempotency check: natural key on (merchantId, transactionId)
   const existingCase = await findCaseByTransactionId(event.transactionId, event.merchantId);
   if (existingCase) {
     return { case: existingCase, isNew: false };

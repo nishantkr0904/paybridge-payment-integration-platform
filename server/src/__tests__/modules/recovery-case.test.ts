@@ -334,6 +334,21 @@ describe('TASK-203: Recovery Case State Machine & Payment Failure Ingestion (RCV
       await expect(
         transitionCase(m2Case.id, merchant1Id, 'diagnosing', { type: 'system' })
       ).rejects.toThrow();
+
+      // Ingestion with mismatched merchant and transaction fails closed (SEC-002 / I9)
+      const spoofedEvent: PaymentFailedEvent = {
+        eventType: 'payment.failed',
+        merchantId: merchant1Id, // Mismatched merchant attempting to claim merchant2's transaction
+        orderId: order2Id,
+        transactionId: txn2Id,
+        amount: 75000,
+        currency: 'INR',
+        correlationId: '01SPOOF0000000000000000001'
+      };
+
+      await expect(ingestPaymentFailure(spoofedEvent)).rejects.toThrow(
+        /does not exist or does not belong to merchant/
+      );
     });
   });
 

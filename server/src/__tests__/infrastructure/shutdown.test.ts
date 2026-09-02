@@ -183,6 +183,9 @@ describe('Graceful Shutdown & Lifecycle Management (TASK-003)', () => {
         mockChannel as unknown as amqp.Channel
       );
 
+      // Mock random to prevent transient simulated gateway failure
+      vi.spyOn(Math, 'random').mockReturnValue(0.5);
+
       // Start the payment worker
       const { consumerTag } = await startPaymentWorker();
       expect(consumerTag).toBe('amq.ctag-test123');

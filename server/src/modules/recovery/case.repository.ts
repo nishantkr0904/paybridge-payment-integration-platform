@@ -166,6 +166,17 @@ export async function createCaseWithEvent(
   try {
     await conn.beginTransaction();
 
+    if (input.transactionId) {
+      const [existingRows] = await conn.query<CaseRow[]>(
+        `SELECT * FROM cases WHERE transaction_id = ? AND merchant_id = ? FOR UPDATE`,
+        [input.transactionId, merchantId]
+      );
+      if (existingRows.length > 0) {
+        await conn.commit();
+        return toCase(existingRows[0]!);
+      }
+    }
+
     const caseRef = generateUlid();
     const status = input.initialStatus || 'detected';
     const currency = input.currency || 'INR';
