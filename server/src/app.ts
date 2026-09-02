@@ -3,12 +3,11 @@ import express from 'express';
 import helmet from 'helmet';
 import path from 'node:path';
 import { pinoHttp } from 'pino-http';
-import client from 'prom-client';
+import { getMetrics, getMetricsContentType } from './infrastructure/metrics.js';
+import { metricsMiddleware } from './middleware/metrics.js';
 import swaggerUi from 'swagger-ui-express';
 import YAML from 'yamljs';
 
-// Enable default metrics collection (memory, CPU, etc.)
-client.collectDefaultMetrics();
 import { env } from './config/env.js';
 import { errorHandler } from './middleware/error-handler.js';
 import { authRouter } from './modules/auth/auth.routes.js';
@@ -27,6 +26,7 @@ export function createApp() {
   app.use(cors({ origin: env.CLIENT_URL }));
   app.use(express.json());
   app.use(correlationIdMiddleware);
+  app.use(metricsMiddleware);
   app.use(
     pinoHttp({
       logger,
@@ -46,14 +46,17 @@ export function createApp() {
     res.json({ status: 'ok', service: 'paybridge-server' });
   });
 
-  app.get('/api/metrics', async (_req, res) => {
+  const handleMetrics = async (_req: express.Request, res: express.Response) => {
     try {
-      res.set('Content-Type', client.register.contentType);
-      res.end(await client.register.metrics());
+      res.set('Content-Type', getMetricsContentType());
+      res.end(await getMetrics());
     } catch (ex) {
       res.status(500).end(ex);
     }
-  });
+  };
+
+  app.get('/metrics', handleMetrics);
+  app.get('/api/metrics', handleMetrics);
 
   app.use('/api/auth', authRouter);
   app.use('/api/merchants', merchantRouter);

@@ -39,8 +39,8 @@ The system runs as four distinct processes sharing a single codebase:
 - **Caching & Locks:** Redis 7 provides safe atomic distributed locks using unique UUID owner tokens and Lua compare-and-delete release scripts (`lock:order:${orderRef}`, `lock:worker:txn:${transactionId}`).
 
 ### Technical Debt Remediated & Remaining Gaps
-- **Remediated in Phase 0:** Safe distributed locking (Lua CAS release, D2 fixed), durable MySQL-backed request idempotency (`idempotency_keys` table with SHA-256 fingerprinting), hardened payment worker duplicate-delivery guards, phased graceful shutdown with in-flight work draining (`server/src/utils/shutdown.ts`), correlation ID propagation across HTTP → RabbitMQ → workers (`server/src/middleware/correlation-id.ts`), and comprehensive automated test suites (71 tests across 7 test files in Vitest).
-- **Remaining Gaps:** Rate limiting (Tier 1 WAF/Redis token bucket), Prometheus/Grafana service-level indicators, and automated database migration tooling (`TASK-101`). These are scheduled in upcoming roadmap milestones.
+- **Remediated in Phase 0:** Safe distributed locking (Lua CAS release, D2 fixed), durable MySQL-backed request idempotency (`idempotency_keys` table with SHA-256 fingerprinting), hardened payment worker duplicate-delivery guards, phased graceful shutdown with in-flight work draining (`server/src/utils/shutdown.ts`), correlation ID propagation across HTTP → RabbitMQ → workers (`server/src/middleware/correlation-id.ts`), custom Prometheus HTTP RED metrics with cardinality protection (`server/src/infrastructure/metrics.ts`, `server/src/middleware/metrics.ts`), Prometheus Compose scraper fix (Defect D1, `docker/prometheus/prometheus.yml`), and comprehensive automated test suites (83 tests across 8 test files in Vitest).
+- **Remaining Gaps:** Rate limiting (Tier 1 WAF/Redis token bucket) and automated database migration tooling (`TASK-101`). These are scheduled in upcoming roadmap milestones.
 
 ---
 
@@ -273,8 +273,8 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 
 ### Instrumentation
 - **Structured Logging & Correlation Propagation:** Express middleware validates/normalizes `x-correlation-id` / `x-request-id` headers (1–128 chars, safe regex charset) or generates ULID fallbacks, setting `req.correlationId` and `x-correlation-id` response headers. Pino generates structured JSON logs containing `correlationId` and `traceId`. RabbitMQ dispatches attach correlation metadata to message headers and AMQP properties. Workers (`payment.worker.ts`, `webhook.worker.ts`, `dlq.worker.ts`) extract correlation context and instantiate contextual child Pino loggers (`logger.child({ correlationId, traceId, ... })`), preserving headers across downstream webhook publications and retries. Note: Full distributed tracing (OpenTelemetry spans/exporters) is a future target capability.
-- **Metrics:** Prometheus scrapes `/metrics` endpoints. Custom SLIs track "Time-to-Recovery", "Policy Veto Rate", and "Agent Latency".
-- **Dashboards:** Grafana visualizes the operational health, SLA breaches, and RabbitMQ queue depths.
+- **Metrics & HTTP RED SLIs:** `prom-client` instruments default Node.js runtime metrics and custom HTTP RED metrics (`http_requests_total`, `http_request_duration_seconds` with buckets `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`). Route normalization maps parameterized paths (`/api/payments/orders/:orderRef/pay`, bounded `unmatched` for 404s) to eliminate high cardinality. Exposed via `GET /metrics` and `GET /api/metrics` with `text/plain; version=0.0.4; charset=utf-8`. Prometheus scrapes `paybridge-api:4000/api/metrics` (Defect D1 remediated). Future target SLIs will track "Time-to-Recovery", "Policy Veto Rate", and "Agent Latency".
+- **Dashboards:** Grafana visualizes operational health, HTTP RED metrics, SLA breaches, and RabbitMQ queue depths.
 
 ---
 
