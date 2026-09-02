@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import { getRabbitMQChannel, QUEUES } from '../infrastructure/rabbitmq.js';
 import { getWebhookEndpoints } from '../modules/webhook/webhook.repository.js';
 import { pool } from '../config/database.js';
+import { generateUlid } from '../utils/ulid.js';
 import type { ResultSetHeader } from 'mysql2';
 
 async function logDelivery(endpointId: number, eventType: string, payload: Record<string, unknown>, status: 'pending' | 'success' | 'failed', responseStatus: number | null): Promise<number> {
@@ -57,11 +58,17 @@ export async function startWebhookWorker() {
     if (!msg) return;
 
     const jobPromise = (async () => {
+      const correlationId =
+        (msg.properties?.headers?.['x-correlation-id'] as string | undefined) ||
+        (msg.properties?.headers?.traceId as string | undefined) ||
+        msg.properties?.correlationId ||
+        generateUlid();
+
       let payload;
       try {
         payload = JSON.parse(msg.content.toString());
       } catch (err) {
-        logger.error({ err }, '[Webhook Worker] Failed to parse message');
+        logger.error({ err, correlationId, traceId: correlationId }, '[Webhook Worker] Failed to parse message');
         channel.ack(msg); // Malformed, just drop it
         return;
       }
@@ -69,7 +76,13 @@ export async function startWebhookWorker() {
       const { merchantId, eventType, data, retryCount = 0 } = payload;
       const MAX_RETRIES = 5;
 
-      logger.info(`[Webhook Worker] Delivering ${eventType} to merchant ${merchantId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
+      const workerLogger = logger.child({
+        correlationId,
+        traceId: correlationId,
+        merchantId
+      });
+
+      workerLogger.info(`[Webhook Worker] Delivering ${eventType} to merchant ${merchantId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
 
       try {
         // Find active webhook endpoint for merchant
@@ -77,7 +90,7 @@ export async function startWebhookWorker() {
         const activeEndpoint = endpoints.find(e => e.isActive);
 
         if (!activeEndpoint) {
-          logger.info(`[Webhook Worker] No active webhook endpoint found for merchant ${merchantId}. Skipping.`);
+          workerLogger.info(`[Webhook Worker] No active webhook endpoint found for merchant ${merchantId}. Skipping.`);
           channel.ack(msg);
           return;
         }
@@ -114,14 +127,14 @@ export async function startWebhookWorker() {
           await updateDelivery(deliveryId, isSuccess ? 'success' : 'failed', response.status);
 
           if (isSuccess) {
-            logger.info(`[Webhook Worker] Delivery successful. HTTP ${response.status}`);
+            workerLogger.info(`[Webhook Worker] Delivery successful. HTTP ${response.status}`);
             channel.ack(msg);
           } else {
             throw new Error(`Non-success HTTP status ${response.status}`);
           }
         } catch (deliveryError) {
           // Network error, timeout, or 500 status code
-          logger.error({ err: deliveryError }, `[Webhook Worker] Delivery failed`);
+          workerLogger.error({ err: deliveryError }, `[Webhook Worker] Delivery failed`);
 
           // Ensure DB is updated to reflect failure if not already updated
           await updateDelivery(deliveryId, 'failed', null);
@@ -130,7 +143,7 @@ export async function startWebhookWorker() {
       } catch {
         if (retryCount < MAX_RETRIES) {
           const backoffMs = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s, 8s, 16s
-          logger.info(`[Webhook Worker] Retrying in ${backoffMs}ms...`);
+          workerLogger.info(`[Webhook Worker] Retrying in ${backoffMs}ms...`);
 
           await new Promise((resolve) => setTimeout(resolve, backoffMs));
 
@@ -139,12 +152,19 @@ export async function startWebhookWorker() {
             '',
             QUEUES.WEBHOOK_DELIVERY,
             Buffer.from(JSON.stringify(newPayload)),
-            { persistent: true }
+            {
+              persistent: true,
+              headers: {
+                'x-correlation-id': correlationId,
+                traceId: correlationId
+              },
+              correlationId
+            }
           );
 
           channel.ack(msg);
         } else {
-          logger.error(`[Webhook Worker] Max retries reached for webhook delivery.`);
+          workerLogger.error(`[Webhook Worker] Max retries reached for webhook delivery.`);
           channel.ack(msg); // Drop after max retries
         }
       }

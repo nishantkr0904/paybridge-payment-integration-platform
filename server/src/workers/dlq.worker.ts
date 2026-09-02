@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import { logger } from '../utils/logger.js';
 import { getRabbitMQChannel, QUEUES } from '../infrastructure/rabbitmq.js';
+import { generateUlid } from '../utils/ulid.js';
 
 let dlqConsumerTag: string | null = null;
 let dlqChannel: import('amqplib').Channel | null = null;
@@ -38,9 +39,20 @@ export async function startDlqWorker() {
     if (!msg) return;
 
     const jobPromise = (async () => {
+      const correlationId =
+        (msg.properties?.headers?.['x-correlation-id'] as string | undefined) ||
+        (msg.properties?.headers?.traceId as string | undefined) ||
+        msg.properties?.correlationId ||
+        generateUlid();
+
+      const workerLogger = logger.child({
+        correlationId,
+        traceId: correlationId
+      });
+
       try {
         const payload = JSON.parse(msg.content.toString());
-        logger.info(
+        workerLogger.info(
           {
             transactionId: payload.transactionId,
             messageId: msg.properties.messageId,
@@ -53,7 +65,7 @@ export async function startDlqWorker() {
         // Acknowledge after logging
         channel.ack(msg);
       } catch (err) {
-        logger.error({ err }, '[DLQ Worker] Error parsing DLQ message');
+        workerLogger.error({ err }, '[DLQ Worker] Error parsing DLQ message');
         // Still ack unparseable messages so they don't block
         channel.ack(msg);
       }

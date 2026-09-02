@@ -131,7 +131,7 @@ describe('Payment Worker Execution Safety (payment.worker.ts)', () => {
         rabbitmqInfra.EXCHANGES.WEBHOOK,
         'webhook.deliver',
         expect.any(Buffer),
-        { persistent: true }
+        expect.objectContaining({ persistent: true })
       );
 
       // Acknowledged
@@ -168,7 +168,7 @@ describe('Payment Worker Execution Safety (payment.worker.ts)', () => {
         rabbitmqInfra.EXCHANGES.WEBHOOK,
         'webhook.deliver',
         expect.any(Buffer),
-        { persistent: true }
+        expect.objectContaining({ persistent: true })
       );
 
       expect(mockChannel.ack).toHaveBeenCalledWith(msg);
@@ -253,7 +253,7 @@ describe('Payment Worker Execution Safety (payment.worker.ts)', () => {
         '',
         rabbitmqInfra.QUEUES.PAYMENT_PROCESSING,
         expect.any(Buffer),
-        { persistent: true }
+        expect.objectContaining({ persistent: true })
       );
 
       const publishedPayload = JSON.parse(
@@ -337,7 +337,7 @@ describe('Payment Worker Execution Safety (payment.worker.ts)', () => {
         '',
         rabbitmqInfra.QUEUES.PAYMENT_PROCESSING,
         expect.any(Buffer),
-        { persistent: true }
+        expect.objectContaining({ persistent: true })
       );
     });
   });

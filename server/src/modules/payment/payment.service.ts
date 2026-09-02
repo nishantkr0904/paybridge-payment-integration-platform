@@ -62,7 +62,8 @@ export async function processPayment(
   orderRef: string,
   merchantId: number,
   input: ProcessPaymentInput,
-  idempotencyKey?: string
+  idempotencyKey?: string,
+  correlationId?: string
 ) {
   /**
    * Execution Ordering:
@@ -70,7 +71,7 @@ export async function processPayment(
    *    If completed, replay cached 202 response without re-executing side effects.
    * 2. Order Concurrency Lock (Redis): Acquire ownership-safe distributed lock for the order.
    * 3. Database State Transition (MySQL): Validate order status, create transaction, update to 'processing'.
-   * 4. Queue Dispatch (RabbitMQ): Publish message to payment worker exchange.
+   * 4. Queue Dispatch (RabbitMQ): Publish message to payment worker exchange with correlation ID.
    * 5. Order Lock Release (Redis): Release ownership-safe lock in finally block via atomic Lua script.
    * 6. Idempotency Completion (MySQL): Mark idempotency record 'completed' with the response payload.
    */
@@ -122,6 +123,7 @@ export async function processPayment(
 
         // Publish to RabbitMQ for asynchronous processing
         const channel = await getRabbitMQChannel();
+        const activeCorrelationId = correlationId || generateUlid();
 
         const payload = {
           transactionId: transaction.id,
@@ -137,7 +139,14 @@ export async function processPayment(
           EXCHANGES.PAYMENT,
           'payment.process',
           Buffer.from(JSON.stringify(payload)),
-          { persistent: true }
+          {
+            persistent: true,
+            headers: {
+              'x-correlation-id': activeCorrelationId,
+              traceId: activeCorrelationId
+            },
+            correlationId: activeCorrelationId
+          }
         );
 
         return {

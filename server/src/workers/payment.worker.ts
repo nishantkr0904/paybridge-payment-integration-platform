@@ -73,11 +73,17 @@ export async function handlePaymentMessage(
   msg: amqp.ConsumeMessage,
   gatewayRunner: (method: string) => GatewaySimulationResult = simulateGateway
 ): Promise<void> {
+  const correlationId =
+    (msg.properties?.headers?.['x-correlation-id'] as string | undefined) ||
+    (msg.properties?.headers?.traceId as string | undefined) ||
+    msg.properties?.correlationId ||
+    generateUlid();
+
   let payload: Record<string, unknown>;
   try {
     payload = JSON.parse(msg.content.toString());
   } catch (err) {
-    logger.error({ err }, '[Worker] Failed to parse message, sending to DLQ');
+    logger.error({ err, correlationId, traceId: correlationId }, '[Worker] Failed to parse message, sending to DLQ');
     channel.nack(msg, false, false);
     return;
   }
@@ -102,6 +108,12 @@ export async function handlePaymentMessage(
     retryCount?: number;
   };
 
+  const workerLogger = logger.child({
+    correlationId,
+    traceId: correlationId,
+    transactionId
+  });
+
   // Validate required fields
   if (
     typeof transactionId !== 'number' ||
@@ -110,7 +122,7 @@ export async function handlePaymentMessage(
     !orderRef ||
     !paymentMethod
   ) {
-    logger.error(
+    workerLogger.error(
       { payload },
       '[Worker] Message payload is malformed or missing required fields, sending to DLQ'
     );
@@ -122,7 +134,7 @@ export async function handlePaymentMessage(
   const transaction = await findTransactionById(transactionId);
 
   if (!transaction) {
-    logger.error(
+    workerLogger.error(
       { transactionId },
       `[Worker] Transaction ${transactionId} not found in database, sending to DLQ`
     );
@@ -131,7 +143,7 @@ export async function handlePaymentMessage(
   }
 
   if (transaction.status === 'success' || transaction.status === 'failed') {
-    logger.info(
+    workerLogger.info(
       { transactionId, status: transaction.status },
       `[Worker] Transaction ${transactionId} is already in terminal state '${transaction.status}'. Acknowledging duplicate message without re-executing payment side effect.`
     );
@@ -144,7 +156,7 @@ export async function handlePaymentMessage(
   const lockToken = await acquireLock(lockKey, WORKER_PAYMENT_LOCK_TTL_SECONDS);
 
   if (!lockToken) {
-    logger.warn(
+    workerLogger.warn(
       { transactionId },
       `[Worker] Transaction ${transactionId} is currently being processed by another worker. Skipping concurrent execution.`
     );
@@ -157,7 +169,7 @@ export async function handlePaymentMessage(
     // Double-check terminal status under lock
     const freshTxn = await findTransactionById(transactionId);
     if (freshTxn && (freshTxn.status === 'success' || freshTxn.status === 'failed')) {
-      logger.info(
+      workerLogger.info(
         { transactionId, status: freshTxn.status },
         `[Worker] Transaction ${transactionId} reached terminal state '${freshTxn.status}' before lock acquisition. Acknowledging message.`
       );
@@ -165,7 +177,7 @@ export async function handlePaymentMessage(
       return;
     }
 
-    logger.info(
+    workerLogger.info(
       { transactionId, attempt: retryCount + 1 },
       `[Worker] Processing payment for transaction ${transactionId} (Attempt ${retryCount + 1}/${MAX_PAYMENT_RETRIES + 1})`
     );
@@ -209,10 +221,17 @@ export async function handlePaymentMessage(
       EXCHANGES.WEBHOOK,
       'webhook.deliver',
       Buffer.from(JSON.stringify(webhookPayload)),
-      { persistent: true }
+      {
+        persistent: true,
+        headers: {
+          'x-correlation-id': correlationId,
+          traceId: correlationId
+        },
+        correlationId
+      }
     );
 
-    logger.info(
+    workerLogger.info(
       { transactionId, status: finalTxnStatus },
       `[Worker] Transaction ${transactionId} completed with status: ${finalTxnStatus}`
     );
@@ -220,26 +239,33 @@ export async function handlePaymentMessage(
     // 6. Acknowledge Message
     channel.ack(msg);
   } catch (error) {
-    logger.error(
+    workerLogger.error(
       { err: error, transactionId },
       `[Worker] Error processing message (Transaction ${transactionId})`
     );
 
     if (retryCount < MAX_PAYMENT_RETRIES) {
-      logger.info(`[Worker] Retrying transaction ${transactionId}...`);
+      workerLogger.info(`[Worker] Retrying transaction ${transactionId}...`);
 
       const newPayload = { ...payload, retryCount: retryCount + 1 };
       channel.publish(
         '', // default exchange
         QUEUES.PAYMENT_PROCESSING,
         Buffer.from(JSON.stringify(newPayload)),
-        { persistent: true }
+        {
+          persistent: true,
+          headers: {
+            'x-correlation-id': correlationId,
+            traceId: correlationId
+          },
+          correlationId
+        }
       );
 
       // Acknowledge the original message now that retry message is enqueued
       channel.ack(msg);
     } else {
-      logger.info(
+      workerLogger.info(
         `[Worker] Max retries reached for transaction ${transactionId}. Sending to DLQ.`
       );
 
@@ -253,7 +279,7 @@ export async function handlePaymentMessage(
         );
         await updateOrderStatus(orderId, 'failed');
       } catch (dbErr) {
-        logger.error(
+        workerLogger.error(
           { err: dbErr },
           `[Worker] Failed to update DB after max retries: ${transactionId}`
         );

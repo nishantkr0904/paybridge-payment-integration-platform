@@ -53,7 +53,8 @@ paymentRouter.post('/orders/:orderRef/pay', async (req, res, next) => {
       req.params.orderRef,
       req.user!.id,
       input,
-      idempotencyKey
+      idempotencyKey,
+      req.correlationId
     );
     res.status(202).json(result);
   } catch (error) {

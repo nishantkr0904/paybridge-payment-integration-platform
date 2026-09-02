@@ -18,6 +18,7 @@ import { webhookRouter } from './modules/webhook/webhook.routes.js';
 import { logger } from './utils/logger.js';
 
 import { isShuttingDown } from './utils/shutdown.js';
+import { correlationIdMiddleware } from './middleware/correlation-id.js';
 
 export function createApp() {
   const app = express();
@@ -25,7 +26,17 @@ export function createApp() {
   app.use(helmet());
   app.use(cors({ origin: env.CLIENT_URL }));
   app.use(express.json());
-  app.use(pinoHttp({ logger }));
+  app.use(correlationIdMiddleware);
+  app.use(
+    pinoHttp({
+      logger,
+      genReqId: (req) => (req as express.Request).correlationId || (req.headers['x-correlation-id'] as string),
+      customProps: (req) => ({
+        correlationId: (req as express.Request).correlationId,
+        traceId: (req as express.Request).correlationId
+      })
+    })
+  );
 
   app.get('/api/health', (_req, res) => {
     if (isShuttingDown()) {
