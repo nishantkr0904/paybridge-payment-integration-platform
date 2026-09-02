@@ -115,8 +115,19 @@ export class MockLLMProvider implements LLMProvider {
         defaultContent = JSON.stringify({
           actionType: 'RETRY_PAYMENT',
           scheduledDelaySeconds: 86400,
-          requiresHumanReview: false,
-          rationale: 'Schedule automated retry 24 hours later during banking operational window'
+          planRationale: 'Schedule automated retry 24 hours later during banking operational window',
+          actions: [
+            {
+              actionType: 'RETRY_PAYMENT',
+              toolName: 'schedule_payment_retry',
+              scheduledDelaySeconds: 86400,
+              costMinorUnits: 0,
+              incentivePercent: 0,
+              rationale: 'Schedule automated retry 24 hours later during banking operational window',
+              parameters: {}
+            }
+          ],
+          costOrderingRespect: true
         });
         defaultStructuredData = JSON.parse(defaultContent);
         break;

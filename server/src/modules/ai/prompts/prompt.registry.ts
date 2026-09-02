@@ -1,3 +1,4 @@
+import { DECISION_PROMPT_V1_0_0 } from './decision.prompt.js';
 import { DIAGNOSIS_PROMPT_V1_0_0 } from './diagnosis.prompt.js';
 import { PromptRenderError, PromptTemplate, RenderedPrompt } from './prompt.types.js';
 
@@ -62,6 +63,7 @@ class PromptRegistry {
 
   constructor() {
     this.register(DIAGNOSIS_PROMPT_V1_0_0);
+    this.register(DECISION_PROMPT_V1_0_0);
   }
 
   /**

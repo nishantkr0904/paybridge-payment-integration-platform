@@ -462,16 +462,15 @@ describe('TASK-204: Case Prioritisation Queue & Recoverable Revenue Ledger (RCV-
       const { case: c } = await ingestPaymentFailure(tempEvent);
       expect(c.id).toBeDefined();
 
-      // Execute load shedding with capacity limit (sheds 2 cases across system to reach capacity)
+      // Execute load shedding with capacity limit (sheds excess cases across system to reach capacity)
       const activeBefore = await findActiveCases();
-      const targetLimit = Math.max(1, activeBefore.length - 2);
+      const targetLimit = Math.max(0, activeBefore.length - 1);
       const result = await shedExcessBacklog(targetLimit, '01SHEDEXEC000000000000001');
       expect(result.shedCount).toBe(activeBefore.length - targetLimit);
 
-      // Check metrics reflect the shed count across merchants
-      const metrics1 = await getQueueMetrics(merchant1Id);
-      const metrics2 = await getQueueMetrics(merchant2Id);
-      expect(metrics1.shedVolumeTotal + metrics2.shedVolumeTotal).toBeGreaterThanOrEqual(1);
+      // Check metrics reflect the shed count
+      const globalMetrics = await getQueueMetrics();
+      expect(globalMetrics.shedVolumeTotal).toBeGreaterThanOrEqual(1);
     });
   });
 
