@@ -17,6 +17,8 @@ import { paymentRouter } from './modules/payment/payment.routes.js';
 import { webhookRouter } from './modules/webhook/webhook.routes.js';
 import { logger } from './utils/logger.js';
 
+import { isShuttingDown } from './utils/shutdown.js';
+
 export function createApp() {
   const app = express();
 
@@ -26,6 +28,10 @@ export function createApp() {
   app.use(pinoHttp({ logger }));
 
   app.get('/api/health', (_req, res) => {
+    if (isShuttingDown()) {
+      res.status(503).json({ status: 'shutting_down', service: 'paybridge-server' });
+      return;
+    }
     res.json({ status: 'ok', service: 'paybridge-server' });
   });
 

@@ -267,17 +267,49 @@ export async function handlePaymentMessage(
   }
 }
 
+let paymentConsumerTag: string | null = null;
+let paymentChannel: amqp.Channel | null = null;
+const activePaymentJobs = new Set<Promise<void>>();
+
+export async function stopPaymentWorker(): Promise<void> {
+  if (paymentChannel && paymentConsumerTag) {
+    logger.info({ consumerTag: paymentConsumerTag }, '[Payment Worker] Cancelling consumer subscription');
+    try {
+      await paymentChannel.cancel(paymentConsumerTag);
+    } catch (err) {
+      logger.warn({ err }, '[Payment Worker] Notice: error while cancelling consumer tag');
+    }
+    paymentConsumerTag = null;
+  }
+
+  if (activePaymentJobs.size > 0) {
+    logger.info(
+      { inFlightCount: activePaymentJobs.size },
+      '[Payment Worker] Waiting for in-flight payment jobs to finish'
+    );
+    await Promise.allSettled(Array.from(activePaymentJobs));
+    logger.info('[Payment Worker] All in-flight payment jobs finished');
+  }
+}
+
 export async function startPaymentWorker() {
   const channel = await getRabbitMQChannel();
+  paymentChannel = channel;
   logger.info(`Payment worker listening on ${QUEUES.PAYMENT_PROCESSING}`);
 
   // Prefetch to process one message at a time
   await channel.prefetch(1);
 
-  await channel.consume(QUEUES.PAYMENT_PROCESSING, async (msg) => {
+  const { consumerTag } = await channel.consume(QUEUES.PAYMENT_PROCESSING, (msg) => {
     if (!msg) return;
-    await handlePaymentMessage(channel, msg);
+    const jobPromise = handlePaymentMessage(channel, msg).finally(() => {
+      activePaymentJobs.delete(jobPromise);
+    });
+    activePaymentJobs.add(jobPromise);
   });
+
+  paymentConsumerTag = consumerTag;
+  return { consumerTag, channel };
 }
 
 // If run directly via node/tsx
@@ -285,8 +317,17 @@ if (
   process.argv[1] &&
   (process.argv[1].endsWith('payment.worker.ts') || process.argv[1].endsWith('payment.worker.js'))
 ) {
-  startPaymentWorker().catch((err) => {
-    console.error('Failed to start worker', err);
-    process.exit(1);
+  import('../utils/shutdown.js').then(({ createWorkerShutdownHandler }) => {
+    startPaymentWorker()
+      .then(() => {
+        createWorkerShutdownHandler({
+          workerName: 'payment-worker',
+          onStop: stopPaymentWorker
+        });
+      })
+      .catch((err) => {
+        logger.fatal({ err }, 'Failed to start worker');
+        process.exit(1);
+      });
   });
 }

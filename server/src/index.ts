@@ -4,6 +4,7 @@ import { logger } from './utils/logger.js';
 
 import { connectRedis } from './infrastructure/redis.js';
 import { connectRabbitMQ } from './infrastructure/rabbitmq.js';
+import { createServerShutdownHandler } from './utils/shutdown.js';
 
 async function bootstrap() {
   try {
@@ -15,8 +16,12 @@ async function bootstrap() {
     
     const app = createApp();
 
-    app.listen(env.PORT, () => {
+    const server = app.listen(env.PORT, () => {
       logger.info(`PayBridge server listening on port ${env.PORT}`);
+    });
+
+    createServerShutdownHandler({
+      server
     });
   } catch (error) {
     logger.error({ err: error }, 'Failed to start server');

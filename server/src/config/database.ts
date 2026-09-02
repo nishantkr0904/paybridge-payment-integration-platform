@@ -11,3 +11,7 @@ export const pool = mysql.createPool({
   connectionLimit: 10,
   namedPlaceholders: true
 });
+
+export async function closePool(): Promise<void> {
+  await pool.end();
+}
