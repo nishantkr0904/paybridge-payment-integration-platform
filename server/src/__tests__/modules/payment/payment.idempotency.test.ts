@@ -143,8 +143,8 @@ describe('Payment & Order Idempotency Integration', () => {
     vi.mocked(paymentRepo.createOrder).mockResolvedValue({ ...mockOrder });
     vi.mocked(paymentRepo.findOrderByRef).mockResolvedValue({ ...mockOrder });
     vi.mocked(paymentRepo.createTransaction).mockResolvedValue({ ...mockTransaction });
-    vi.mocked(paymentRepo.updateTransactionStatus).mockResolvedValue();
-    vi.mocked(paymentRepo.updateOrderStatus).mockResolvedValue();
+    vi.mocked(paymentRepo.updateTransactionStatus).mockResolvedValue(true);
+    vi.mocked(paymentRepo.updateOrderStatus).mockResolvedValue(true);
 
     // Wire up Redis and RabbitMQ mocks
     vi.mocked(redisInfra.acquireLock).mockResolvedValue('test-owner-token');

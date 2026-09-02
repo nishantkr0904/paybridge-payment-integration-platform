@@ -91,14 +91,11 @@ export async function processPayment(
       }
 
       try {
-        const order = await findOrderByRef(orderRef);
+        // Enforce tenant scoping at the repository level (SEC-002, Invariant I9)
+        const order = await findOrderByRef(orderRef, merchantId);
 
         if (!order) {
           throw new HttpError(404, 'ORDER_NOT_FOUND', 'Order does not exist.');
-        }
-
-        if (order.merchantId !== merchantId) {
-          throw new HttpError(403, 'ORDER_FORBIDDEN', 'Order does not belong to this merchant.');
         }
 
         if (order.status === 'success') {
@@ -118,8 +115,8 @@ export async function processPayment(
           amount: order.amount
         });
 
-        await updateTransactionStatus(transaction.id, 'processing');
-        await updateOrderStatus(order.id, 'processing');
+        await updateTransactionStatus(transaction.id, merchantId, 'processing');
+        await updateOrderStatus(order.id, merchantId, 'processing');
 
         // Publish to RabbitMQ for asynchronous processing
         const channel = await getRabbitMQChannel();
@@ -176,17 +173,14 @@ export async function processPayment(
 /* ------------------------------------------------------------------ */
 
 export async function getOrderStatus(orderRef: string, merchantId: number) {
-  const order = await findOrderByRef(orderRef);
+  // Enforce tenant scoping at the repository level (SEC-002, Invariant I9)
+  const order = await findOrderByRef(orderRef, merchantId);
 
   if (!order) {
     throw new HttpError(404, 'ORDER_NOT_FOUND', 'Order does not exist.');
   }
 
-  if (order.merchantId !== merchantId) {
-    throw new HttpError(403, 'ORDER_FORBIDDEN', 'Order does not belong to this merchant.');
-  }
-
-  const transactions = await findTransactionsByOrderId(order.id);
+  const transactions = await findTransactionsByOrderId(order.id, merchantId);
 
   return { order, transactions };
 }

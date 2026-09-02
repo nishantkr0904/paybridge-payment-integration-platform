@@ -131,12 +131,12 @@ export async function handlePaymentMessage(
   }
 
   // 1. Durable Terminal State Check (Duplicate Delivery Safety)
-  const transaction = await findTransactionById(transactionId);
+  const transaction = await findTransactionById(transactionId, merchantId);
 
   if (!transaction) {
     workerLogger.error(
-      { transactionId },
-      `[Worker] Transaction ${transactionId} not found in database, sending to DLQ`
+      { transactionId, merchantId },
+      `[Worker] Transaction ${transactionId} not found in database for merchant ${merchantId}, sending to DLQ`
     );
     channel.nack(msg, false, false);
     return;
@@ -167,7 +167,7 @@ export async function handlePaymentMessage(
 
   try {
     // Double-check terminal status under lock
-    const freshTxn = await findTransactionById(transactionId);
+    const freshTxn = await findTransactionById(transactionId, merchantId);
     if (freshTxn && (freshTxn.status === 'success' || freshTxn.status === 'failed')) {
       workerLogger.info(
         { transactionId, status: freshTxn.status },
@@ -191,12 +191,13 @@ export async function handlePaymentMessage(
     // 4. Update Database State
     await updateTransactionStatus(
       transactionId,
+      merchantId,
       finalTxnStatus,
       result.gatewayResponse,
       result.failureReason
     );
 
-    await updateOrderStatus(orderId, finalOrderStatus);
+    await updateOrderStatus(orderId, merchantId, finalOrderStatus);
 
     // 5. Publish Webhook Event
     const webhookPayload = {
@@ -273,11 +274,12 @@ export async function handlePaymentMessage(
       try {
         await updateTransactionStatus(
           transactionId,
+          merchantId,
           'failed',
           undefined,
           'System Error: Max retries exceeded'
         );
-        await updateOrderStatus(orderId, 'failed');
+        await updateOrderStatus(orderId, merchantId, 'failed');
       } catch (dbErr) {
         workerLogger.error(
           { err: dbErr },

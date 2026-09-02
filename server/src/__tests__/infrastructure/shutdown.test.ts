@@ -219,8 +219,9 @@ describe('Graceful Shutdown & Lifecycle Management (TASK-003)', () => {
       vi.spyOn(paymentRepo, 'updateTransactionStatus').mockImplementation(async () => {
         await new Promise((resolve) => setTimeout(resolve, 50));
         jobResolved = true;
+        return true;
       });
-      vi.spyOn(paymentRepo, 'updateOrderStatus').mockResolvedValue();
+      vi.spyOn(paymentRepo, 'updateOrderStatus').mockResolvedValue(true);
 
       vi.spyOn(redisInfra, 'acquireLock').mockResolvedValue('lock-token');
       vi.spyOn(redisInfra, 'releaseLock').mockResolvedValue(true);

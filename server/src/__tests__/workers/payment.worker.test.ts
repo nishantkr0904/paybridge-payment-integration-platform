@@ -87,8 +87,8 @@ describe('Payment Worker Execution Safety (payment.worker.ts)', () => {
     vi.mocked(redisInfra.acquireLock).mockResolvedValue('worker-lock-token-123');
     vi.mocked(redisInfra.releaseLock).mockResolvedValue(true);
     vi.mocked(paymentRepo.findTransactionById).mockResolvedValue({ ...mockTransaction });
-    vi.mocked(paymentRepo.updateTransactionStatus).mockResolvedValue();
-    vi.mocked(paymentRepo.updateOrderStatus).mockResolvedValue();
+    vi.mocked(paymentRepo.updateTransactionStatus).mockResolvedValue(true);
+    vi.mocked(paymentRepo.updateOrderStatus).mockResolvedValue(true);
   });
 
   describe('1. Valid Job Processing & State Transitions', () => {
@@ -120,11 +120,12 @@ describe('Payment Worker Execution Safety (payment.worker.ts)', () => {
       // State persistence
       expect(paymentRepo.updateTransactionStatus).toHaveBeenCalledWith(
         501,
+        1,
         'success',
         mockGatewaySuccess.gatewayResponse,
         undefined
       );
-      expect(paymentRepo.updateOrderStatus).toHaveBeenCalledWith(101, 'success');
+      expect(paymentRepo.updateOrderStatus).toHaveBeenCalledWith(101, 1, 'success');
 
       // Webhook published
       expect(mockChannel.publish).toHaveBeenCalledWith(
@@ -157,11 +158,12 @@ describe('Payment Worker Execution Safety (payment.worker.ts)', () => {
 
       expect(paymentRepo.updateTransactionStatus).toHaveBeenCalledWith(
         501,
+        1,
         'failed',
         mockGatewayDecline.gatewayResponse,
         'Insufficient funds'
       );
-      expect(paymentRepo.updateOrderStatus).toHaveBeenCalledWith(101, 'failed');
+      expect(paymentRepo.updateOrderStatus).toHaveBeenCalledWith(101, 1, 'failed');
 
       // Webhook published with payment.failed
       expect(mockChannel.publish).toHaveBeenCalledWith(
@@ -277,11 +279,12 @@ describe('Payment Worker Execution Safety (payment.worker.ts)', () => {
       // Database marked failed due to max retry exhaustion
       expect(paymentRepo.updateTransactionStatus).toHaveBeenCalledWith(
         501,
+        1,
         'failed',
         undefined,
         'System Error: Max retries exceeded'
       );
-      expect(paymentRepo.updateOrderStatus).toHaveBeenCalledWith(101, 'failed');
+      expect(paymentRepo.updateOrderStatus).toHaveBeenCalledWith(101, 1, 'failed');
 
       // NACK without requeue (sends to DLQ)
       expect(mockChannel.nack).toHaveBeenCalledWith(msg, false, false);

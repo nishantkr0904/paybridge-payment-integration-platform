@@ -241,8 +241,8 @@ describe('Correlation ID Propagation & Tracing (TASK-005 / AT-OBS-001)', () => {
         updatedAt: new Date()
       });
 
-      vi.spyOn(paymentRepo, 'updateTransactionStatus').mockResolvedValue();
-      vi.spyOn(paymentRepo, 'updateOrderStatus').mockResolvedValue();
+      vi.spyOn(paymentRepo, 'updateTransactionStatus').mockResolvedValue(true);
+      vi.spyOn(paymentRepo, 'updateOrderStatus').mockResolvedValue(true);
 
       // Bypass idempotency layer for direct publish assertion
       vi.spyOn(idempotencyService, 'executeWithIdempotency').mockImplementation(
@@ -326,7 +326,7 @@ describe('Correlation ID Propagation & Tracing (TASK-005 / AT-OBS-001)', () => {
 
       vi.spyOn(redisInfra, 'acquireLock').mockResolvedValue('lock-token');
       vi.spyOn(redisInfra, 'releaseLock').mockResolvedValue(true);
-      vi.spyOn(paymentRepo, 'updateTransactionStatus').mockResolvedValue();
+      vi.spyOn(paymentRepo, 'updateTransactionStatus').mockResolvedValue(true);
       await handlePaymentMessage(
         mockChannel as unknown as amqp.Channel,
         mockMsg,
@@ -397,8 +397,8 @@ describe('Correlation ID Propagation & Tracing (TASK-005 / AT-OBS-001)', () => {
 
       vi.spyOn(redisInfra, 'acquireLock').mockResolvedValue('lock-token');
       vi.spyOn(redisInfra, 'releaseLock').mockResolvedValue(true);
-      vi.spyOn(paymentRepo, 'updateTransactionStatus').mockResolvedValue();
-      vi.spyOn(paymentRepo, 'updateOrderStatus').mockResolvedValue();
+      vi.spyOn(paymentRepo, 'updateTransactionStatus').mockResolvedValue(true);
+      vi.spyOn(paymentRepo, 'updateOrderStatus').mockResolvedValue(true);
 
       await handlePaymentMessage(mockChannel as unknown as amqp.Channel, mockLegacyMsg);
 

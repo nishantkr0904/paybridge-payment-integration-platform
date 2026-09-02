@@ -71,8 +71,8 @@ describe('Payment Service Lock Integration (payment.service.ts)', () => {
     vi.clearAllMocks();
     vi.mocked(paymentRepo.findOrderByRef).mockResolvedValue({ ...mockOrder });
     vi.mocked(paymentRepo.createTransaction).mockResolvedValue({ ...mockTransaction });
-    vi.mocked(paymentRepo.updateTransactionStatus).mockResolvedValue();
-    vi.mocked(paymentRepo.updateOrderStatus).mockResolvedValue();
+    vi.mocked(paymentRepo.updateTransactionStatus).mockResolvedValue(true);
+    vi.mocked(paymentRepo.updateOrderStatus).mockResolvedValue(true);
     vi.mocked(rabbitmqInfra.getRabbitMQChannel).mockResolvedValue(mockRabbitChannel as unknown as ReturnType<typeof rabbitmqInfra.getRabbitMQChannel> extends Promise<infer U> ? U : never);
   });
 
@@ -88,10 +88,10 @@ describe('Payment Service Lock Integration (payment.service.ts)', () => {
     expect(redisInfra.acquireLock).toHaveBeenCalledWith('lock:order:ord_test_123', 10);
 
     // Verify critical section executed
-    expect(paymentRepo.findOrderByRef).toHaveBeenCalledWith('ord_test_123');
+    expect(paymentRepo.findOrderByRef).toHaveBeenCalledWith('ord_test_123', 1);
     expect(paymentRepo.createTransaction).toHaveBeenCalledTimes(1);
-    expect(paymentRepo.updateTransactionStatus).toHaveBeenCalledWith(202, 'processing');
-    expect(paymentRepo.updateOrderStatus).toHaveBeenCalledWith(101, 'processing');
+    expect(paymentRepo.updateTransactionStatus).toHaveBeenCalledWith(202, 1, 'processing');
+    expect(paymentRepo.updateOrderStatus).toHaveBeenCalledWith(101, 1, 'processing');
     expect(mockRabbitChannel.publish).toHaveBeenCalledTimes(1);
 
     // Verify expected return contract
