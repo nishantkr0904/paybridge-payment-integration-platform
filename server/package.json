@@ -15,7 +15,11 @@
     "start:webhook-worker": "node dist/workers/webhook.worker.js",
     "lint": "eslint \"src/**/*.ts\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:migrate": "tsx src/database/cli.ts migrate",
+    "db:rollback": "tsx src/database/cli.ts rollback",
+    "db:status": "tsx src/database/cli.ts status",
+    "db:baseline": "tsx src/database/cli.ts baseline"
   },
   "dependencies": {
     "amqplib": "^2.0.1",

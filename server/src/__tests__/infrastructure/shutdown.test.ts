@@ -202,7 +202,7 @@ describe('Graceful Shutdown & Lifecycle Management (TASK-003)', () => {
         )
       };
 
-      // Mock repository calls used inside handlePaymentMessage
+      // Mock repository and redis calls used inside handlePaymentMessage
       const paymentRepo = await import('../../modules/payment/payment.repository.js');
       vi.spyOn(paymentRepo, 'findTransactionById').mockResolvedValue({
         id: 999,
@@ -222,9 +222,8 @@ describe('Graceful Shutdown & Lifecycle Management (TASK-003)', () => {
       });
       vi.spyOn(paymentRepo, 'updateOrderStatus').mockResolvedValue();
 
-      const redisModule = await import('../../infrastructure/redis.js');
-      vi.spyOn(redisModule, 'acquireLock').mockResolvedValue('lock-token');
-      vi.spyOn(redisModule, 'releaseLock').mockResolvedValue(true);
+      vi.spyOn(redisInfra, 'acquireLock').mockResolvedValue('lock-token');
+      vi.spyOn(redisInfra, 'releaseLock').mockResolvedValue(true);
 
       // Trigger the consumer message
       if (messageHandler) {
