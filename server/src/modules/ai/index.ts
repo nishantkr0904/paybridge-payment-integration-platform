@@ -17,3 +17,7 @@ export * from './tracing/trace.repository.js';
 export * from './tracing/trace.service.js';
 export * from './tracing/trace.orchestrator.js';
 export * from './tracing/trace.routes.js';
+export * from './evaluation/evaluation.types.js';
+export * from './evaluation/calibration.js';
+export * from './evaluation/golden-dataset.js';
+export * from './evaluation/evaluation.harness.js';

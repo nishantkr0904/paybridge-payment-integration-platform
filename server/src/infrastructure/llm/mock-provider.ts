@@ -92,23 +92,63 @@ export class MockLLMProvider implements LLMProvider {
     let defaultContent: string;
     let defaultStructuredData: Record<string, unknown> | null;
     let modelId: string;
-
     switch (request.task) {
-      case 'diagnosis':
+      case 'diagnosis': {
         modelId = 'mock-diagnosis-v1';
+        let category = 'INSUFFICIENT_FUNDS';
+        let recoverable = true;
+        let recommendedStrategy = 'DELAYED_RETRY';
+        let rootCause = 'Temporary account balance deficit';
+
+        // Extract context payload if embedded in prompt
+        const match = request.prompt.match(/<<<BEGIN_UNTRUSTED_CONTEXT_PAYLOAD>>>\s*([\s\S]*?)\s*<<<END_UNTRUSTED_CONTEXT_PAYLOAD>>>/);
+        if (match && match[1]) {
+          try {
+            const ctx = JSON.parse(match[1]);
+            const cat = ctx.case?.failureCategory;
+            if (cat) {
+              category = cat;
+              if (cat === 'FRAUD_BLOCK') {
+                recoverable = false;
+                recommendedStrategy = 'ABANDON';
+                rootCause = 'High risk fraud velocity block';
+              } else if (cat === 'CARD_EXPIRED' || cat === 'ISSUER_HARD_DECLINE') {
+                recoverable = cat !== 'ISSUER_HARD_DECLINE';
+                recommendedStrategy = 'ALTERNATE_PAYMENT_METHOD';
+                rootCause = 'Card expired or closed';
+              } else if (cat === 'AUTHENTICATION_FAILED') {
+                recoverable = true;
+                recommendedStrategy = 'CUSTOMER_OUTREACH';
+                rootCause = '3DS OTP customer authentication timeout';
+              } else if (cat === 'TECHNICAL_TRANSIENT' || cat === 'NETWORK_TIMEOUT') {
+                recoverable = true;
+                recommendedStrategy = 'IMMEDIATE_RETRY';
+                rootCause = 'Transient network or gateway timeout';
+              } else if (cat === 'ISSUER_DOWN' || cat === 'ISSUER_SOFT_DECLINE' || cat === 'VELOCITY_LIMIT') {
+                recoverable = true;
+                recommendedStrategy = 'DELAYED_RETRY';
+                rootCause = 'Temporary issuer or velocity decline';
+              }
+            }
+          } catch {
+            // ignore parse error, use defaults
+          }
+        }
+
         defaultContent = JSON.stringify({
-          category: 'INSUFFICIENT_FUNDS',
-          reasonCode: 'SOFT_DECLINE',
-          rootCause: 'Temporary account balance deficit',
+          category,
+          reasonCode: category,
+          rootCause,
           contributingFactors: ['Customer historic payment methods indicate active card usage'],
-          recoverable: true,
-          recommendedStrategy: 'DELAYED_RETRY',
-          confidence: 0.88,
-          explanation: 'Payment declined due to temporary insufficient funds. Retry scheduled for subsequent pay period.',
+          recoverable,
+          recommendedStrategy,
+          confidence: category === 'INSUFFICIENT_FUNDS' ? 0.88 : 0.92,
+          explanation: `Payment failure analyzed as ${category}. Recommended action: ${recommendedStrategy}.`,
           evidence: ['gatewayResponse.declineCode', 'customer.previousSuccess']
         });
         defaultStructuredData = JSON.parse(defaultContent);
         break;
+      }
 
       case 'decision':
         modelId = 'mock-decision-v1';
