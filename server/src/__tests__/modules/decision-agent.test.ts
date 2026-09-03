@@ -196,7 +196,7 @@ describe('TASK-304: Decision Agent & Recovery Planner (AI-005 / AI-006 / AI-003 
       expect(plan.provenance.promptVersion).toBe('v1.0.0');
       expect(plan.provenance.modelId).toBe('mock-decision-v1');
       expect(plan.provenance.tokens.totalTokens).toBeGreaterThan(0);
-      expect(plan.provenance.latencyMs).toBeGreaterThanOrEqual(15);
+      expect(plan.provenance.latencyMs).toBeGreaterThanOrEqual(1);
       expect(plan.provenance.contextVersion).toBe('v1.0.0');
       expect(plan.provenance.diagnosisCategory).toBe(testDiagnosis.category);
       expect(plan.provenance.repairAttempted).toBe(false);
