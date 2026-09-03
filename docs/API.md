@@ -64,9 +64,14 @@ Returns merchant profile with real-time payment summary.
 
 All payment endpoints require `Authorization: Bearer <accessToken>`.
 
+Write endpoints (`POST /api/payments/orders`, `POST /api/payments/orders/:orderRef/pay`) support an optional `Idempotency-Key` header to safely retry requests without producing duplicate side effects.
+
 ### Create checkout order
 
 `POST /api/payments/orders`
+
+Headers:
+- `Idempotency-Key` *(optional)* — Unique client key (1–255 chars) for safe retries.
 
 ```json
 {
@@ -103,6 +108,9 @@ Response: `201 Created`
 ### Process payment
 
 `POST /api/payments/orders/:orderRef/pay`
+
+Headers:
+- `Idempotency-Key` *(optional)* — Unique client key (1–255 chars) for safe retries.
 
 ```json
 {
@@ -203,3 +211,6 @@ All errors follow this format:
 - `ORDER_ALREADY_PAID` — order has already been successfully paid
 - `ORDER_PROCESSING` — a payment is currently being processed
 - `VALIDATION_ERROR` — request body failed schema validation
+- `IDEMPOTENCY_KEY_MISMATCH` — idempotency key was previously used with a different request payload
+- `IDEMPOTENCY_IN_PROGRESS` — a request with this idempotency key is currently in progress
+- `INVALID_IDEMPOTENCY_KEY` — idempotency key format or length is invalid

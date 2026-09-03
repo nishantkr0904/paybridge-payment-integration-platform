@@ -4,5 +4,6 @@ global:
 
 scrape_configs:
   - job_name: 'paybridge-server'
+    metrics_path: '/api/metrics'
     static_configs:
-      - targets: ['api:4000']
+      - targets: ['paybridge-api:4000']

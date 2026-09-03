@@ -1,14 +1,22 @@
 import 'dotenv/config';
+import type amqp from 'amqplib';
 import { logger } from '../utils/logger.js';
 import { getRabbitMQChannel, QUEUES, EXCHANGES } from '../infrastructure/rabbitmq.js';
-import { updateOrderStatus, updateTransactionStatus } from '../modules/payment/payment.repository.js';
+import { acquireLock, releaseLock } from '../infrastructure/redis.js';
+import {
+  findTransactionById,
+  updateOrderStatus,
+  updateTransactionStatus
+} from '../modules/payment/payment.repository.js';
 import { generateUlid } from '../utils/ulid.js';
 
-function simulateGateway(method: string): {
+export interface GatewaySimulationResult {
   success: boolean;
   gatewayResponse: Record<string, unknown>;
   failureReason?: string;
-} {
+}
+
+export function simulateGateway(method: string): GatewaySimulationResult {
   // 10% chance of a transient infrastructure error (network timeout, 503, etc)
   if (Math.random() < 0.1) {
     throw new Error('Transient Gateway Timeout');
@@ -46,117 +54,349 @@ function simulateGateway(method: string): {
   };
 }
 
+export function mapFailureReasonToCategory(reason?: string): string {
+  if (!reason) return 'UNKNOWN_DECLINE';
+  const lower = reason.toLowerCase();
+  if (lower.includes('insufficient')) return 'INSUFFICIENT_FUNDS';
+  if (lower.includes('issuer') || lower.includes('declined')) return 'ISSUER_HARD_DECLINE';
+  if (lower.includes('risk') || lower.includes('fraud')) return 'FRAUD_BLOCKED';
+  if (lower.includes('timeout')) return 'GATEWAY_TIMEOUT';
+  return 'GATEWAY_DECLINED';
+}
+
+export interface PaymentChannel {
+  ack(message: amqp.Message, allUpTo?: boolean): void;
+  nack(message: amqp.Message, allUpTo?: boolean, requeue?: boolean): void;
+  publish(
+    exchange: string,
+    routingKey: string,
+    content: Buffer,
+    options?: amqp.Options.Publish
+  ): boolean;
+}
+
+export const WORKER_PAYMENT_LOCK_TTL_SECONDS = 30;
+export const MAX_PAYMENT_RETRIES = 3;
+
+export async function handlePaymentMessage(
+  channel: PaymentChannel,
+  msg: amqp.ConsumeMessage,
+  gatewayRunner: (method: string) => GatewaySimulationResult = simulateGateway
+): Promise<void> {
+  const correlationId =
+    (msg.properties?.headers?.['x-correlation-id'] as string | undefined) ||
+    (msg.properties?.headers?.traceId as string | undefined) ||
+    msg.properties?.correlationId ||
+    generateUlid();
+
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(msg.content.toString());
+  } catch (err) {
+    logger.error({ err, correlationId, traceId: correlationId }, '[Worker] Failed to parse message, sending to DLQ');
+    channel.nack(msg, false, false);
+    return;
+  }
+
+  const {
+    transactionId,
+    orderId,
+    merchantId,
+    orderRef,
+    txnRef,
+    paymentMethod,
+    amount,
+    retryCount = 0
+  } = payload as {
+    transactionId?: number;
+    orderId?: number;
+    merchantId?: number;
+    orderRef?: string;
+    txnRef?: string;
+    paymentMethod?: string;
+    amount?: number;
+    retryCount?: number;
+  };
+
+  const workerLogger = logger.child({
+    correlationId,
+    traceId: correlationId,
+    transactionId
+  });
+
+  // Validate required fields
+  if (
+    typeof transactionId !== 'number' ||
+    typeof orderId !== 'number' ||
+    typeof merchantId !== 'number' ||
+    !orderRef ||
+    !paymentMethod
+  ) {
+    workerLogger.error(
+      { payload },
+      '[Worker] Message payload is malformed or missing required fields, sending to DLQ'
+    );
+    channel.nack(msg, false, false);
+    return;
+  }
+
+  // 1. Durable Terminal State Check (Duplicate Delivery Safety)
+  const transaction = await findTransactionById(transactionId, merchantId);
+
+  if (!transaction) {
+    workerLogger.error(
+      { transactionId, merchantId },
+      `[Worker] Transaction ${transactionId} not found in database for merchant ${merchantId}, sending to DLQ`
+    );
+    channel.nack(msg, false, false);
+    return;
+  }
+
+  if (transaction.status === 'success' || transaction.status === 'failed') {
+    workerLogger.info(
+      { transactionId, status: transaction.status },
+      `[Worker] Transaction ${transactionId} is already in terminal state '${transaction.status}'. Acknowledging duplicate message without re-executing payment side effect.`
+    );
+    channel.ack(msg);
+    return;
+  }
+
+  // 2. Concurrency Protection: Acquire Distributed Worker Lock
+  const lockKey = `lock:worker:txn:${transactionId}`;
+  const lockToken = await acquireLock(lockKey, WORKER_PAYMENT_LOCK_TTL_SECONDS);
+
+  if (!lockToken) {
+    workerLogger.warn(
+      { transactionId },
+      `[Worker] Transaction ${transactionId} is currently being processed by another worker. Skipping concurrent execution.`
+    );
+    // Requeue so it can be retried or acknowledged once the active worker finishes
+    channel.nack(msg, false, true);
+    return;
+  }
+
+  try {
+    // Double-check terminal status under lock
+    const freshTxn = await findTransactionById(transactionId, merchantId);
+    if (freshTxn && (freshTxn.status === 'success' || freshTxn.status === 'failed')) {
+      workerLogger.info(
+        { transactionId, status: freshTxn.status },
+        `[Worker] Transaction ${transactionId} reached terminal state '${freshTxn.status}' before lock acquisition. Acknowledging message.`
+      );
+      channel.ack(msg);
+      return;
+    }
+
+    workerLogger.info(
+      { transactionId, attempt: retryCount + 1 },
+      `[Worker] Processing payment for transaction ${transactionId} (Attempt ${retryCount + 1}/${MAX_PAYMENT_RETRIES + 1})`
+    );
+
+    // 3. Execute Payment Side Effect
+    const result = gatewayRunner(paymentMethod);
+
+    const finalTxnStatus = result.success ? 'success' : 'failed';
+    const finalOrderStatus = result.success ? 'success' : 'failed';
+
+    // 4. Update Database State
+    await updateTransactionStatus(
+      transactionId,
+      merchantId,
+      finalTxnStatus,
+      result.gatewayResponse,
+      result.failureReason
+    );
+
+    await updateOrderStatus(orderId, merchantId, finalOrderStatus);
+
+    // 5. Publish Recovery and Webhook Events
+    if (!result.success) {
+      const failurePayload = {
+        eventType: 'payment.failed',
+        merchantId,
+        orderId,
+        transactionId,
+        orderRef,
+        txnRef: txnRef || transaction.txnRef,
+        amount: amount ?? transaction.amount,
+        currency: 'INR',
+        failureCategory: result.failureReason ? mapFailureReasonToCategory(result.failureReason) : 'UNKNOWN_DECLINE',
+        failureReason: result.failureReason,
+        gatewayResponse: result.gatewayResponse,
+        timestamp: new Date().toISOString()
+      };
+
+      channel.publish(
+        EXCHANGES.PAYMENT,
+        'payment.failed',
+        Buffer.from(JSON.stringify(failurePayload)),
+        {
+          persistent: true,
+          headers: {
+            'x-correlation-id': correlationId,
+            traceId: correlationId
+          },
+          correlationId
+        }
+      );
+    }
+
+    const webhookPayload = {
+      merchantId,
+      transactionId,
+      orderId,
+      orderRef,
+      txnRef: txnRef || transaction.txnRef,
+      eventType: result.success ? 'payment.success' : 'payment.failed',
+      data: {
+        orderRef,
+        txnRef: txnRef || transaction.txnRef,
+        amount: amount ?? transaction.amount,
+        paymentMethod,
+        status: finalTxnStatus,
+        gatewayResponse: result.gatewayResponse,
+        failureReason: result.failureReason
+      }
+    };
+
+    channel.publish(
+      EXCHANGES.WEBHOOK,
+      'webhook.deliver',
+      Buffer.from(JSON.stringify(webhookPayload)),
+      {
+        persistent: true,
+        headers: {
+          'x-correlation-id': correlationId,
+          traceId: correlationId
+        },
+        correlationId
+      }
+    );
+
+    workerLogger.info(
+      { transactionId, status: finalTxnStatus },
+      `[Worker] Transaction ${transactionId} completed with status: ${finalTxnStatus}`
+    );
+
+    // 6. Acknowledge Message
+    channel.ack(msg);
+  } catch (error) {
+    workerLogger.error(
+      { err: error, transactionId },
+      `[Worker] Error processing message (Transaction ${transactionId})`
+    );
+
+    if (retryCount < MAX_PAYMENT_RETRIES) {
+      workerLogger.info(`[Worker] Retrying transaction ${transactionId}...`);
+
+      const newPayload = { ...payload, retryCount: retryCount + 1 };
+      channel.publish(
+        '', // default exchange
+        QUEUES.PAYMENT_PROCESSING,
+        Buffer.from(JSON.stringify(newPayload)),
+        {
+          persistent: true,
+          headers: {
+            'x-correlation-id': correlationId,
+            traceId: correlationId
+          },
+          correlationId
+        }
+      );
+
+      // Acknowledge the original message now that retry message is enqueued
+      channel.ack(msg);
+    } else {
+      workerLogger.info(
+        `[Worker] Max retries reached for transaction ${transactionId}. Sending to DLQ.`
+      );
+
+      // Update DB status to reflect system failure
+      try {
+        await updateTransactionStatus(
+          transactionId,
+          merchantId,
+          'failed',
+          undefined,
+          'System Error: Max retries exceeded'
+        );
+        await updateOrderStatus(orderId, merchantId, 'failed');
+      } catch (dbErr) {
+        workerLogger.error(
+          { err: dbErr },
+          `[Worker] Failed to update DB after max retries: ${transactionId}`
+        );
+      }
+
+      // NACK without requeue sends it to the DLX/DLQ
+      channel.nack(msg, false, false);
+    }
+  } finally {
+    await releaseLock(lockKey, lockToken);
+  }
+}
+
+let paymentConsumerTag: string | null = null;
+let paymentChannel: amqp.Channel | null = null;
+const activePaymentJobs = new Set<Promise<void>>();
+
+export async function stopPaymentWorker(): Promise<void> {
+  if (paymentChannel && paymentConsumerTag) {
+    logger.info({ consumerTag: paymentConsumerTag }, '[Payment Worker] Cancelling consumer subscription');
+    try {
+      await paymentChannel.cancel(paymentConsumerTag);
+    } catch (err) {
+      logger.warn({ err }, '[Payment Worker] Notice: error while cancelling consumer tag');
+    }
+    paymentConsumerTag = null;
+  }
+
+  if (activePaymentJobs.size > 0) {
+    logger.info(
+      { inFlightCount: activePaymentJobs.size },
+      '[Payment Worker] Waiting for in-flight payment jobs to finish'
+    );
+    await Promise.allSettled(Array.from(activePaymentJobs));
+    logger.info('[Payment Worker] All in-flight payment jobs finished');
+  }
+}
+
 export async function startPaymentWorker() {
   const channel = await getRabbitMQChannel();
+  paymentChannel = channel;
   logger.info(`Payment worker listening on ${QUEUES.PAYMENT_PROCESSING}`);
 
   // Prefetch to process one message at a time
   await channel.prefetch(1);
 
-  await channel.consume(QUEUES.PAYMENT_PROCESSING, async (msg) => {
+  const { consumerTag } = await channel.consume(QUEUES.PAYMENT_PROCESSING, (msg) => {
     if (!msg) return;
-
-    let payload;
-    try {
-      payload = JSON.parse(msg.content.toString());
-    } catch (err) {
-      logger.error({ err }, '[Worker] Failed to parse message, sending to DLQ');
-      return channel.nack(msg, false, false);
-    }
-
-    const { transactionId, orderId, merchantId, orderRef, paymentMethod, retryCount = 0 } = payload;
-    const MAX_RETRIES = 3;
-
-    logger.info({ transactionId, attempt: retryCount + 1 }, `[Worker] Processing payment for transaction ${transactionId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
-
-    try {
-      // We wrap it in a short delay to simulate network latency
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-      
-      const result = simulateGateway(paymentMethod);
-
-      const finalTxnStatus = result.success ? 'success' : 'failed';
-      const finalOrderStatus = result.success ? 'success' : 'failed';
-
-      await updateTransactionStatus(
-        transactionId,
-        finalTxnStatus,
-        result.gatewayResponse,
-        result.failureReason
-      );
-
-      await updateOrderStatus(orderId, finalOrderStatus);
-
-      // Publish webhook event
-      const webhookPayload = {
-        merchantId,
-        transactionId,
-        orderId,
-        orderRef,
-        txnRef: payload.txnRef,
-        eventType: result.success ? 'payment.success' : 'payment.failed',
-        data: {
-          orderRef,
-          txnRef: payload.txnRef,
-          amount: payload.amount,
-          paymentMethod,
-          status: finalTxnStatus,
-          gatewayResponse: result.gatewayResponse,
-          failureReason: result.failureReason
-        }
-      };
-
-      channel.publish(
-        EXCHANGES.WEBHOOK,
-        'webhook.deliver',
-        Buffer.from(JSON.stringify(webhookPayload)),
-        { persistent: true }
-      );
-
-      logger.info({ transactionId, status: finalTxnStatus }, `[Worker] Transaction ${transactionId} completed with status: ${finalTxnStatus}`);
-      
-      channel.ack(msg);
-    } catch (error) {
-      logger.error({ err: error }, `[Worker] Error processing message (Transaction ${transactionId})`);
-      
-      if (retryCount < MAX_RETRIES) {
-        logger.info(`[Worker] Retrying transaction ${transactionId} in 2 seconds...`);
-        
-        // Wait before requeuing to act as a simple backoff
-        await new Promise((resolve) => setTimeout(resolve, 2000));
-        
-        // Publish a new message with incremented retry count
-        const newPayload = { ...payload, retryCount: retryCount + 1 };
-        channel.publish(
-          '', // default exchange
-          QUEUES.PAYMENT_PROCESSING,
-          Buffer.from(JSON.stringify(newPayload)),
-          { persistent: true }
-        );
-        
-        // Ack the original message so it doesn't get processed again
-        channel.ack(msg);
-      } else {
-        logger.info(`[Worker] Max retries reached for transaction ${transactionId}. Sending to DLQ.`);
-        // NACK without requeue sends it to the DLX/DLQ
-        channel.nack(msg, false, false);
-        
-        // Optionally update the DB status to reflect the system failure
-        try {
-          await updateTransactionStatus(transactionId, 'failed', undefined, 'System Error: Max retries exceeded');
-          await updateOrderStatus(orderId, 'failed');
-        } catch (dbErr) {
-          logger.error({ err: dbErr }, `[Worker] Failed to update DB after max retries: ${transactionId}`);
-        }
-      }
-    }
+    const jobPromise = handlePaymentMessage(channel, msg).finally(() => {
+      activePaymentJobs.delete(jobPromise);
+    });
+    activePaymentJobs.add(jobPromise);
   });
+
+  paymentConsumerTag = consumerTag;
+  return { consumerTag, channel };
 }
 
 // If run directly via node/tsx
-if (process.argv[1] && (process.argv[1].endsWith('payment.worker.ts') || process.argv[1].endsWith('payment.worker.js'))) {
-  startPaymentWorker().catch((err) => {
-    console.error('Failed to start worker', err);
-    process.exit(1);
+if (
+  process.argv[1] &&
+  (process.argv[1].endsWith('payment.worker.ts') || process.argv[1].endsWith('payment.worker.js'))
+) {
+  import('../utils/shutdown.js').then(({ createWorkerShutdownHandler }) => {
+    startPaymentWorker()
+      .then(() => {
+        createWorkerShutdownHandler({
+          workerName: 'payment-worker',
+          onStop: stopPaymentWorker
+        });
+      })
+      .catch((err) => {
+        logger.fatal({ err }, 'Failed to start worker');
+        process.exit(1);
+      });
   });
 }

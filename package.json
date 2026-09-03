@@ -8,7 +8,12 @@
     "dev:server": "npm run dev --workspace server",
     "dev:client": "npm run dev --workspace client",
     "build": "npm run build --workspace server && npm run build --workspace client",
-    "lint": "npm run lint --workspace server && npm run lint --workspace client"
+    "lint": "npm run lint --workspace server && npm run lint --workspace client",
+    "test": "npm run test --workspace server && npm run test --workspace client",
+    "db:migrate": "npm run db:migrate --workspace server",
+    "db:rollback": "npm run db:rollback --workspace server --",
+    "db:status": "npm run db:status --workspace server",
+    "db:baseline": "npm run db:baseline --workspace server"
   },
   "workspaces": [
     "client",

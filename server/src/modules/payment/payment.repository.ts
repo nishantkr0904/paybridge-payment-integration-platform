@@ -75,7 +75,7 @@ function toTransaction(row: TransactionRow): Transaction {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Orders                                                            */
+/*  Orders (Tenant-Scoped)                                            */
 /* ------------------------------------------------------------------ */
 
 export async function createOrder(input: {
@@ -116,7 +116,24 @@ export async function createOrder(input: {
   };
 }
 
-export async function findOrderByRef(orderRef: string): Promise<Order | null> {
+/**
+ * Tenant-scoped order lookup by order_ref.
+ * Enforces merchant_id in the SQL WHERE clause (SEC-002, Invariant I9).
+ */
+export async function findOrderByRef(orderRef: string, merchantId: number): Promise<Order | null> {
+  const [rows] = await pool.query<OrderRow[]>(
+    `SELECT * FROM orders WHERE order_ref = :orderRef AND merchant_id = :merchantId`,
+    { orderRef, merchantId }
+  );
+
+  return rows[0] ? toOrder(rows[0]) : null;
+}
+
+/**
+ * Public customer checkout order lookup by order_ref.
+ * Explicitly named public access path for unauthenticated payment flows.
+ */
+export async function findOrderByRefPublic(orderRef: string): Promise<Order | null> {
   const [rows] = await pool.query<OrderRow[]>(
     `SELECT * FROM orders WHERE order_ref = :orderRef`,
     { orderRef }
@@ -125,7 +142,22 @@ export async function findOrderByRef(orderRef: string): Promise<Order | null> {
   return rows[0] ? toOrder(rows[0]) : null;
 }
 
-export async function findOrderById(id: number): Promise<Order | null> {
+/**
+ * Tenant-scoped order lookup by internal order ID.
+ */
+export async function findOrderById(id: number, merchantId: number): Promise<Order | null> {
+  const [rows] = await pool.query<OrderRow[]>(
+    `SELECT * FROM orders WHERE id = :id AND merchant_id = :merchantId`,
+    { id, merchantId }
+  );
+
+  return rows[0] ? toOrder(rows[0]) : null;
+}
+
+/**
+ * Explicit system-level order lookup by ID (bypassing tenant scoping for system maintenance).
+ */
+export async function findOrderByIdSystem(id: number): Promise<Order | null> {
   const [rows] = await pool.query<OrderRow[]>(
     `SELECT * FROM orders WHERE id = :id`,
     { id }
@@ -134,15 +166,33 @@ export async function findOrderById(id: number): Promise<Order | null> {
   return rows[0] ? toOrder(rows[0]) : null;
 }
 
-export async function updateOrderStatus(id: number, status: OrderStatus): Promise<void> {
-  await pool.query(
+/**
+ * Tenant-scoped order status update.
+ * Enforces merchant_id in the SQL WHERE clause.
+ */
+export async function updateOrderStatus(id: number, merchantId: number, status: OrderStatus): Promise<boolean> {
+  const [result] = await pool.query<ResultSetHeader>(
+    `UPDATE orders SET status = :status WHERE id = :id AND merchant_id = :merchantId`,
+    { id, merchantId, status }
+  );
+
+  return result.affectedRows > 0;
+}
+
+/**
+ * Explicit system-level order status update (for broker/background operations without merchant scope).
+ */
+export async function updateOrderStatusSystem(id: number, status: OrderStatus): Promise<boolean> {
+  const [result] = await pool.query<ResultSetHeader>(
     `UPDATE orders SET status = :status WHERE id = :id`,
     { id, status }
   );
+
+  return result.affectedRows > 0;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Transactions                                                      */
+/*  Transactions (Tenant-Scoped)                                      */
 /* ------------------------------------------------------------------ */
 
 export async function createTransaction(input: {
@@ -171,13 +221,46 @@ export async function createTransaction(input: {
   };
 }
 
+/**
+ * Tenant-scoped transaction status update.
+ * Enforces merchant ownership via JOIN with orders.
+ */
 export async function updateTransactionStatus(
+  id: number,
+  merchantId: number,
+  status: TransactionStatus,
+  gatewayResponse?: Record<string, unknown>,
+  failureReason?: string
+): Promise<boolean> {
+  const [result] = await pool.query<ResultSetHeader>(
+    `UPDATE transactions t
+     JOIN orders o ON o.id = t.order_id
+     SET t.status = :status,
+         t.gateway_response = :gatewayResponse,
+         t.failure_reason = :failureReason
+     WHERE t.id = :id AND o.merchant_id = :merchantId`,
+    {
+      id,
+      merchantId,
+      status,
+      gatewayResponse: gatewayResponse ? JSON.stringify(gatewayResponse) : null,
+      failureReason: failureReason ?? null
+    }
+  );
+
+  return result.affectedRows > 0;
+}
+
+/**
+ * Explicit system-level transaction status update.
+ */
+export async function updateTransactionStatusSystem(
   id: number,
   status: TransactionStatus,
   gatewayResponse?: Record<string, unknown>,
   failureReason?: string
-): Promise<void> {
-  await pool.query(
+): Promise<boolean> {
+  const [result] = await pool.query<ResultSetHeader>(
     `UPDATE transactions
      SET status = :status,
          gateway_response = :gatewayResponse,
@@ -190,9 +273,29 @@ export async function updateTransactionStatus(
       failureReason: failureReason ?? null
     }
   );
+
+  return result.affectedRows > 0;
 }
 
-export async function findTransactionsByOrderId(orderId: number): Promise<Transaction[]> {
+/**
+ * Tenant-scoped transaction listing by orderId.
+ */
+export async function findTransactionsByOrderId(orderId: number, merchantId: number): Promise<Transaction[]> {
+  const [rows] = await pool.query<TransactionRow[]>(
+    `SELECT t.* FROM transactions t
+     JOIN orders o ON o.id = t.order_id
+     WHERE t.order_id = :orderId AND o.merchant_id = :merchantId
+     ORDER BY t.created_at DESC`,
+    { orderId, merchantId }
+  );
+
+  return rows.map(toTransaction);
+}
+
+/**
+ * Explicit system-level transaction listing by orderId.
+ */
+export async function findTransactionsByOrderIdSystem(orderId: number): Promise<Transaction[]> {
   const [rows] = await pool.query<TransactionRow[]>(
     `SELECT * FROM transactions WHERE order_id = :orderId ORDER BY created_at DESC`,
     { orderId }
@@ -201,8 +304,34 @@ export async function findTransactionsByOrderId(orderId: number): Promise<Transa
   return rows.map(toTransaction);
 }
 
+/**
+ * Tenant-scoped transaction lookup by transaction ID.
+ */
+export async function findTransactionById(id: number, merchantId: number): Promise<Transaction | null> {
+  const [rows] = await pool.query<TransactionRow[]>(
+    `SELECT t.* FROM transactions t
+     JOIN orders o ON o.id = t.order_id
+     WHERE t.id = :id AND o.merchant_id = :merchantId`,
+    { id, merchantId }
+  );
+
+  return rows[0] ? toTransaction(rows[0]) : null;
+}
+
+/**
+ * Explicit system-level transaction lookup by transaction ID.
+ */
+export async function findTransactionByIdSystem(id: number): Promise<Transaction | null> {
+  const [rows] = await pool.query<TransactionRow[]>(
+    `SELECT * FROM transactions WHERE id = :id`,
+    { id }
+  );
+
+  return rows[0] ? toTransaction(rows[0]) : null;
+}
+
 /* ------------------------------------------------------------------ */
-/*  Merchant order listing                                            */
+/*  Merchant order listing & summary (Tenant-Scoped)                  */
 /* ------------------------------------------------------------------ */
 
 export async function findOrdersByMerchantId(
@@ -247,10 +376,6 @@ export async function findOrdersByMerchantId(
     total: countRows[0]?.total ?? 0
   };
 }
-
-/* ------------------------------------------------------------------ */
-/*  Merchant summary                                                  */
-/* ------------------------------------------------------------------ */
 
 export async function getOrderCountsByMerchant(
   merchantId: number

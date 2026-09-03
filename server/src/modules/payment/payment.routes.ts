@@ -34,7 +34,9 @@ paymentRouter.use(authenticate);
 paymentRouter.post('/orders', async (req, res, next) => {
   try {
     const input = createOrderSchema.parse(req.body);
-    const order = await createCheckoutOrder(req.user!.id, input);
+    const idempotencyKey =
+      req.header('idempotency-key') || req.header('x-idempotency-key') || undefined;
+    const order = await createCheckoutOrder(req.user!.id, input, idempotencyKey);
     res.status(201).json(order);
   } catch (error) {
     next(error);
@@ -45,7 +47,15 @@ paymentRouter.post('/orders', async (req, res, next) => {
 paymentRouter.post('/orders/:orderRef/pay', async (req, res, next) => {
   try {
     const input = processPaymentSchema.parse(req.body);
-    const result = await processPayment(req.params.orderRef, req.user!.id, input);
+    const idempotencyKey =
+      req.header('idempotency-key') || req.header('x-idempotency-key') || undefined;
+    const result = await processPayment(
+      req.params.orderRef,
+      req.user!.id,
+      input,
+      idempotencyKey,
+      req.correlationId
+    );
     res.status(202).json(result);
   } catch (error) {
     next(error);

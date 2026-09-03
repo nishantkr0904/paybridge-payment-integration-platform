@@ -1,5 +1,8 @@
+import { acquireLock, releaseLock } from '../../infrastructure/redis.js';
+import { getRabbitMQChannel, EXCHANGES } from '../../infrastructure/rabbitmq.js';
 import { HttpError } from '../../utils/http-error.js';
 import { generateUlid } from '../../utils/ulid.js';
+import { executeWithIdempotency } from '../idempotency/idempotency.service.js';
 import {
   createOrder,
   createTransaction,
@@ -12,103 +15,157 @@ import {
 } from './payment.repository.js';
 import type { CreateOrderInput, OrderFilters, ProcessPaymentInput } from './payment.types.js';
 
+const PAYMENT_LOCK_TTL_SECONDS = 10;
+
 /* ------------------------------------------------------------------ */
 /*  Create checkout order                                             */
 /* ------------------------------------------------------------------ */
 
-export async function createCheckoutOrder(merchantId: number, input: CreateOrderInput) {
-  const orderRef = generateUlid();
-
-  const order = await createOrder({
+export async function createCheckoutOrder(
+  merchantId: number,
+  input: CreateOrderInput,
+  idempotencyKey?: string
+) {
+  const result = await executeWithIdempotency({
     merchantId,
-    orderRef,
-    amount: input.amount,
-    currency: input.currency,
-    description: input.description,
-    customerEmail: input.customerEmail,
-    metadata: input.metadata
+    idempotencyKey,
+    requestPath: '/api/payments/orders',
+    payload: input,
+    action: async () => {
+      const orderRef = generateUlid();
+
+      const order = await createOrder({
+        merchantId,
+        orderRef,
+        amount: input.amount,
+        currency: input.currency,
+        description: input.description,
+        customerEmail: input.customerEmail,
+        metadata: input.metadata
+      });
+
+      return {
+        statusCode: 201,
+        data: order
+      };
+    }
   });
 
-  return order;
+  return result.data;
 }
 
-import { acquireLock, releaseLock } from '../../infrastructure/redis.js';
-import { getRabbitMQChannel, EXCHANGES } from '../../infrastructure/rabbitmq.js';
+/* ------------------------------------------------------------------ */
+/*  Process payment                                                   */
+/* ------------------------------------------------------------------ */
 
-export async function processPayment(orderRef: string, merchantId: number, input: ProcessPaymentInput) {
-  const order = await findOrderByRef(orderRef);
+export async function processPayment(
+  orderRef: string,
+  merchantId: number,
+  input: ProcessPaymentInput,
+  idempotencyKey?: string,
+  correlationId?: string
+) {
+  /**
+   * Execution Ordering:
+   * 1. Idempotency Acquisition (MySQL): Check if this logical request was already processed.
+   *    If completed, replay cached 202 response without re-executing side effects.
+   * 2. Order Concurrency Lock (Redis): Acquire ownership-safe distributed lock for the order.
+   * 3. Database State Transition (MySQL): Validate order status, create transaction, update to 'processing'.
+   * 4. Queue Dispatch (RabbitMQ): Publish message to payment worker exchange with correlation ID.
+   * 5. Order Lock Release (Redis): Release ownership-safe lock in finally block via atomic Lua script.
+   * 6. Idempotency Completion (MySQL): Mark idempotency record 'completed' with the response payload.
+   */
+  const result = await executeWithIdempotency({
+    merchantId,
+    idempotencyKey,
+    requestPath: `/api/payments/orders/${orderRef}/pay`,
+    payload: input,
+    action: async () => {
+      // Acquire a distributed lock to prevent double-processing.
+      // Uses orderRef as the deterministic logical payment key with a bounded TTL.
+      const lockKey = `lock:order:${orderRef}`;
+      const lockToken = await acquireLock(lockKey, PAYMENT_LOCK_TTL_SECONDS);
 
-  if (!order) {
-    throw new HttpError(404, 'ORDER_NOT_FOUND', 'Order does not exist.');
-  }
+      if (!lockToken) {
+        throw new HttpError(429, 'ORDER_PROCESSING', 'A payment request is already in progress. Please try again.');
+      }
 
-  if (order.merchantId !== merchantId) {
-    throw new HttpError(403, 'ORDER_FORBIDDEN', 'Order does not belong to this merchant.');
-  }
+      try {
+        // Enforce tenant scoping at the repository level (SEC-002, Invariant I9)
+        const order = await findOrderByRef(orderRef, merchantId);
 
-  if (order.status === 'success') {
-    throw new HttpError(409, 'ORDER_ALREADY_PAID', 'This order has already been paid.');
-  }
+        if (!order) {
+          throw new HttpError(404, 'ORDER_NOT_FOUND', 'Order does not exist.');
+        }
 
-  if (order.status === 'processing') {
-    throw new HttpError(409, 'ORDER_PROCESSING', 'A payment is currently being processed for this order.');
-  }
+        if (order.status === 'success') {
+          throw new HttpError(409, 'ORDER_ALREADY_PAID', 'This order has already been paid.');
+        }
 
-  // Acquire a distributed lock to prevent double-processing
-  // Uses orderRef as the lock key with a 10 second TTL
-  const lockKey = `lock:order:${orderRef}`;
-  const isLocked = await acquireLock(lockKey, 10);
-  
-  if (!isLocked) {
-    throw new HttpError(429, 'ORDER_PROCESSING', 'A payment request is already in progress. Please try again.');
-  }
+        if (order.status === 'processing') {
+          throw new HttpError(409, 'ORDER_PROCESSING', 'A payment is currently being processed for this order.');
+        }
 
-  try {
-    const txnRef = generateUlid();
+        const txnRef = generateUlid();
 
-    const transaction = await createTransaction({
-      orderId: order.id,
-      txnRef,
-      paymentMethod: input.paymentMethod,
-      amount: order.amount
-    });
+        const transaction = await createTransaction({
+          orderId: order.id,
+          txnRef,
+          paymentMethod: input.paymentMethod,
+          amount: order.amount
+        });
 
-    await updateTransactionStatus(transaction.id, 'processing');
-    await updateOrderStatus(order.id, 'processing');
+        await updateTransactionStatus(transaction.id, merchantId, 'processing');
+        await updateOrderStatus(order.id, merchantId, 'processing');
 
-    // Publish to RabbitMQ for asynchronous processing
-    const channel = await getRabbitMQChannel();
-    
-    const payload = {
-      transactionId: transaction.id,
-      orderId: order.id,
-      merchantId: order.merchantId,
-      orderRef: order.orderRef,
-      txnRef,
-      paymentMethod: input.paymentMethod,
-      amount: order.amount
-    };
+        // Publish to RabbitMQ for asynchronous processing
+        const channel = await getRabbitMQChannel();
+        const activeCorrelationId = correlationId || generateUlid();
 
-    channel.publish(
-      EXCHANGES.PAYMENT,
-      'payment.process',
-      Buffer.from(JSON.stringify(payload)),
-      { persistent: true }
-    );
+        const payload = {
+          transactionId: transaction.id,
+          orderId: order.id,
+          merchantId: order.merchantId,
+          orderRef: order.orderRef,
+          txnRef,
+          paymentMethod: input.paymentMethod,
+          amount: order.amount
+        };
 
-    return {
-      orderRef: order.orderRef,
-      txnRef,
-      status: 'processing',
-      paymentMethod: input.paymentMethod,
-      amount: order.amount,
-      currency: order.currency,
-      message: 'Payment has been queued for processing.'
-    };
-  } finally {
-    // We can release the lock since the DB state has been moved to 'processing'
-    await releaseLock(lockKey);
-  }
+        channel.publish(
+          EXCHANGES.PAYMENT,
+          'payment.process',
+          Buffer.from(JSON.stringify(payload)),
+          {
+            persistent: true,
+            headers: {
+              'x-correlation-id': activeCorrelationId,
+              traceId: activeCorrelationId
+            },
+            correlationId: activeCorrelationId
+          }
+        );
+
+        return {
+          statusCode: 202,
+          data: {
+            orderRef: order.orderRef,
+            txnRef,
+            status: 'processing' as const,
+            paymentMethod: input.paymentMethod,
+            amount: order.amount,
+            currency: order.currency,
+            message: 'Payment has been queued for processing.'
+          }
+        };
+      } finally {
+        // Release the lock since the DB state has been moved to 'processing' or if an error occurred
+        await releaseLock(lockKey, lockToken);
+      }
+    }
+  });
+
+  return result.data;
 }
 
 /* ------------------------------------------------------------------ */
@@ -116,17 +173,14 @@ export async function processPayment(orderRef: string, merchantId: number, input
 /* ------------------------------------------------------------------ */
 
 export async function getOrderStatus(orderRef: string, merchantId: number) {
-  const order = await findOrderByRef(orderRef);
+  // Enforce tenant scoping at the repository level (SEC-002, Invariant I9)
+  const order = await findOrderByRef(orderRef, merchantId);
 
   if (!order) {
     throw new HttpError(404, 'ORDER_NOT_FOUND', 'Order does not exist.');
   }
 
-  if (order.merchantId !== merchantId) {
-    throw new HttpError(403, 'ORDER_FORBIDDEN', 'Order does not belong to this merchant.');
-  }
-
-  const transactions = await findTransactionsByOrderId(order.id);
+  const transactions = await findTransactionsByOrderId(order.id, merchantId);
 
   return { order, transactions };
 }
