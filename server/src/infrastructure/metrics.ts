@@ -20,6 +20,20 @@ export const httpRequestDurationSeconds = new client.Histogram({
   registers: [metricsRegistry]
 });
 
+export const actionExecutionDuplicatesSuppressedTotal = new client.Counter({
+  name: 'recovery_action_duplicates_suppressed_total',
+  help: 'Total number of duplicate recovery actions suppressed by idempotency checks',
+  labelNames: ['action_type'] as const,
+  registers: [metricsRegistry]
+});
+
+export const actionExecutionsTotal = new client.Counter({
+  name: 'recovery_action_executions_total',
+  help: 'Total number of recovery action executions by status',
+  labelNames: ['action_type', 'status'] as const,
+  registers: [metricsRegistry]
+});
+
 export async function getMetrics(): Promise<string> {
   return metricsRegistry.metrics();
 }

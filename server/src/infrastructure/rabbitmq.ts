@@ -78,6 +78,7 @@ export const DelayedRetryPayloadSchema = z.object({
   currency: z.string().length(3).optional(),
   retryAttempt: z.number().int().min(1).max(10),
   actionType: z.string().optional().default('RETRY_PAYMENT'),
+  policyEvaluationRef: z.string().optional(),
   correlationId: z.string().min(1),
   traceId: z.string().optional(),
   scheduledAt: z.string().optional(),
