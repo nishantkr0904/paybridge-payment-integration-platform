@@ -151,12 +151,12 @@ graph TD
 - **Dependencies:** Reads from Redis/MySQL for fast configuration lookups.
 
 ### Audit Service (New)
-- **Purpose:** Maintain the immutable system of record.
-- **Responsibilities:** Write all state changes, policy decisions, and operator actions to the append-only Event Store.
+- **Purpose:** Maintain the immutable system of record and generate certified compliance artifacts.
+- **Responsibilities:** Write all state changes, policy decisions, and operator actions to the append-only Event Store (`case_events`). Expose certified dispute and compliance export endpoints (`server/src/modules/audit/audit.routes.ts` at `/api/audit/cases/:idOrRef/export`) generating RFC 4180 CSV and structured JSON files with SHA-256 cryptographic integrity checksums (`X-Audit-Signature`).
 
 ### Dashboard (Recovery Cockpit)
-- **Purpose:** Operator interface for triage and manual intervention.
-- **Dependencies:** Reads primarily from materialized views / Read Models managed by the Analytics Service to prevent operational DB load.
+- **Purpose:** Operator interface for triage, manual intervention, and certified audit trail export.
+- **Dependencies:** Consumes tenant-scoped REST APIs (`/api/recovery/*`, `/api/audit/*`) to render prioritized queues, inspection drawers, reasoning trace transcripts with masked PII, and 1-click audit downloads.
 
 ---
 

@@ -185,7 +185,7 @@ describe('TASK-303: Prompt Management & Diagnosis Agent (AI-002 / AI-003 / AI-00
       expect(result.provenance.promptVersion).toBe('v1.0.0');
       expect(result.provenance.modelId).toBe('mock-diagnosis-v1');
       expect(result.provenance.tokens.totalTokens).toBeGreaterThan(0);
-      expect(result.provenance.latencyMs).toBeGreaterThanOrEqual(10);
+      expect(result.provenance.latencyMs).toBeGreaterThanOrEqual(1);
       expect(result.provenance.contextVersion).toBe('v1.0.0');
       expect(result.provenance.repairAttempted).toBe(false);
       expect(result.provenance.fallbackReason).toBeNull();

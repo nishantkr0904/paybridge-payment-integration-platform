@@ -38,6 +38,14 @@ export function DashboardPage() {
               Payments
             </button>
             <button
+              className="inline-flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100 shadow-xs"
+              type="button"
+              onClick={() => navigate('/recovery')}
+            >
+              <ShieldCheck size={16} aria-hidden="true" className="text-amber-700" />
+              Recovery Cockpit
+            </button>
+            <button
               className="inline-flex items-center gap-2 rounded-md border border-line bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:border-ink"
               type="button"
               onClick={() => navigate('/developers')}
@@ -97,6 +105,23 @@ export function DashboardPage() {
               <h3 className="font-semibold text-ink">Payment workspace</h3>
               <p className="text-sm text-slate-600">
                 Create checkout orders, process payments, and view transaction history.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div
+          className="mt-4 cursor-pointer rounded-md border border-amber-200 bg-amber-50/40 p-5 hover:border-amber-400 shadow-xs"
+          onClick={() => navigate('/recovery')}
+        >
+          <div className="flex items-center gap-3">
+            <div className="flex h-10 w-10 items-center justify-center rounded-md bg-amber-100 text-amber-900">
+              <ShieldCheck size={20} aria-hidden="true" />
+            </div>
+            <div>
+              <h3 className="font-semibold text-amber-950">Recovery Cockpit</h3>
+              <p className="text-sm text-amber-900/80">
+                Inspect AI diagnosis traces, work the prioritized triage queue, and authorize human interventions.
               </p>
             </div>
           </div>
