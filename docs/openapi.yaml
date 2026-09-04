@@ -117,6 +117,215 @@ components:
           $ref: '#/components/schemas/ProposedAction'
         correlationId:
           type: string
+    RecoveryLatencyMetrics:
+      type: object
+      required:
+        - sampleSize
+        - avgDurationSeconds
+        - minDurationSeconds
+        - maxDurationSeconds
+        - p50DurationSeconds
+        - p90DurationSeconds
+        - p99DurationSeconds
+      properties:
+        sampleSize:
+          type: integer
+          description: Number of successfully recovered cases with recorded lifecycle timestamps
+        avgDurationSeconds:
+          type: number
+          description: Mean recovery duration in seconds
+        minDurationSeconds:
+          type: number
+          description: Minimum duration in seconds
+        maxDurationSeconds:
+          type: number
+          description: Maximum duration in seconds
+        p50DurationSeconds:
+          type: number
+          description: 50th percentile (median) duration in seconds
+        p90DurationSeconds:
+          type: number
+          description: 90th percentile duration in seconds
+        p99DurationSeconds:
+          type: number
+          description: 99th percentile duration in seconds
+    StrategyPerformance:
+      type: object
+      required:
+        - strategy
+        - attempts
+        - successfulRecoveries
+        - recoveryRate
+        - recoveredRevenueMinorUnits
+      properties:
+        strategy:
+          type: string
+          description: Canonical recovery action or strategy identifier
+        attempts:
+          type: integer
+          description: Total execution attempts using this strategy
+        successfulRecoveries:
+          type: integer
+          description: Number of cases successfully recovered using this strategy
+        recoveryRate:
+          type: number
+          description: Recovery success rate for this strategy (successfulRecoveries / attempts)
+        recoveredRevenueMinorUnits:
+          type: integer
+          description: Total revenue recovered via this strategy in integer minor units
+    CategoryBreakdown:
+      type: object
+      required:
+        - failureCategory
+        - isAddressable
+        - caseCount
+        - detectedMinorUnits
+        - recoveredMinorUnits
+        - suppressedMinorUnits
+        - unrecoveredMinorUnits
+        - inFlightMinorUnits
+      properties:
+        failureCategory:
+          type: string
+        isAddressable:
+          type: boolean
+        caseCount:
+          type: integer
+        detectedMinorUnits:
+          type: integer
+        recoveredMinorUnits:
+          type: integer
+        suppressedMinorUnits:
+          type: integer
+        unrecoveredMinorUnits:
+          type: integer
+        inFlightMinorUnits:
+          type: integer
+    RecoveryRates:
+      type: object
+      required:
+        - recoveryRate
+        - revenueRecoveryRate
+        - attemptRecoveryRate
+        - overallCaseRecoveryRate
+      properties:
+        recoveryRate:
+          type: number
+          description: Primary recovery rate (successful recoveries / eligible addressable cases)
+        revenueRecoveryRate:
+          type: number
+          description: Net revenue recovery rate (recovered revenue / addressable value at risk)
+        attemptRecoveryRate:
+          type: number
+          description: Execution attempt efficiency (successful recoveries / total attempts)
+        overallCaseRecoveryRate:
+          type: number
+          description: Overall case recovery rate (successful recoveries / all detected cases)
+    RecoveryAnalytics:
+      type: object
+      required:
+        - merchantId
+        - currency
+        - period
+        - counts
+        - revenue
+        - rates
+        - latency
+        - strategyPerformance
+        - categoryPerformance
+        - reconciliation
+      properties:
+        merchantId:
+          type: integer
+          nullable: true
+          description: Authenticated merchant identifier (null for platform-wide aggregates)
+        currency:
+          type: string
+          example: INR
+        period:
+          type: object
+          properties:
+            startDate:
+              type: string
+              format: date-time
+            endDate:
+              type: string
+              format: date-time
+        counts:
+          type: object
+          required:
+            - totalCases
+            - eligibleCases
+            - ineligibleCases
+            - totalAttempts
+            - successfulRecoveries
+            - unrecoveredCases
+            - suppressedCases
+            - inFlightCases
+          properties:
+            totalCases:
+              type: integer
+            eligibleCases:
+              type: integer
+            ineligibleCases:
+              type: integer
+            totalAttempts:
+              type: integer
+            successfulRecoveries:
+              type: integer
+            unrecoveredCases:
+              type: integer
+            suppressedCases:
+              type: integer
+            inFlightCases:
+              type: integer
+        revenue:
+          type: object
+          required:
+            - totalDetectedMinorUnits
+            - addressableMinorUnits
+            - nonAddressableMinorUnits
+            - recoveredRevenueMinorUnits
+            - unrecoveredRevenueMinorUnits
+            - suppressedRevenueMinorUnits
+            - inFlightRevenueMinorUnits
+          properties:
+            totalDetectedMinorUnits:
+              type: integer
+            addressableMinorUnits:
+              type: integer
+            nonAddressableMinorUnits:
+              type: integer
+            recoveredRevenueMinorUnits:
+              type: integer
+            unrecoveredRevenueMinorUnits:
+              type: integer
+            suppressedRevenueMinorUnits:
+              type: integer
+            inFlightRevenueMinorUnits:
+              type: integer
+        rates:
+          $ref: '#/components/schemas/RecoveryRates'
+        latency:
+          $ref: '#/components/schemas/RecoveryLatencyMetrics'
+        strategyPerformance:
+          type: array
+          items:
+            $ref: '#/components/schemas/StrategyPerformance'
+        categoryPerformance:
+          type: array
+          items:
+            $ref: '#/components/schemas/CategoryBreakdown'
+        reconciliation:
+          type: object
+          required:
+            - isReconciled
+            - varianceMinorUnits
+          properties:
+            isReconciled:
+              type: boolean
+            varianceMinorUnits:
+              type: integer
 security:
   - bearerAuth: []
 paths:
@@ -340,6 +549,39 @@ paths:
       responses:
         '200':
           description: Recoverable revenue ledger with exact reconciliation breakdown
+  /merchants/recovery/analytics:
+    get:
+      summary: Retrieve recovery performance KPIs for authenticated merchant
+      parameters:
+        - in: query
+          name: startDate
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: endDate
+          schema:
+            type: string
+            format: date-time
+        - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+      responses:
+        '200':
+          description: Recovery analytics breakdown
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryAnalytics'
+        '400':
+          description: Validation error
+        '401':
+          description: Unauthorized
+        '500':
+          description: Server error
   /merchants/recovery/queue:
     get:
       summary: Retrieve prioritized recovery case queue with fair scheduling
@@ -379,6 +621,43 @@ paths:
       responses:
         '200':
           description: Shed cases result with audit count
+  /recovery/analytics:
+    get:
+      summary: Retrieve recovery performance KPIs, latency percentiles, and strategy breakdown
+      description: Returns production-quality recovery analytics for the authenticated merchant, including case volumes, multi-tier recovery rates with deterministic zero-denominator handling, time-to-recovery (TTR) percentiles, strategy performance, and 0-variance ledger reconciliation.
+      parameters:
+        - in: query
+          name: startDate
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive start timestamp for recovery cases (ISO 8601)
+        - in: query
+          name: endDate
+          schema:
+            type: string
+            format: date-time
+          description: Inclusive end timestamp for recovery cases (ISO 8601)
+        - in: query
+          name: currency
+          schema:
+            type: string
+            minLength: 3
+            maxLength: 3
+          description: 3-character ISO currency filter (e.g. INR)
+      responses:
+        '200':
+          description: Comprehensive recovery analytics response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryAnalytics'
+        '400':
+          description: Validation error (malformed parameter or startDate > endDate)
+        '401':
+          description: Missing or invalid authentication token
+        '500':
+          description: Internal server error
   /recovery/cases:
     get:
       summary: List recovery cases for authenticated merchant
