@@ -1,12 +1,17 @@
 import { Router } from 'express';
+import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
+import { generateUlid } from '../../utils/ulid.js';
+import { executeWithIdempotency } from '../idempotency/idempotency.service.js';
 import {
   createCheckoutOrder,
   getOrderStatus,
   listMerchantOrders,
   processPayment
 } from './payment.service.js';
+import { CheckoutAbandonmentInputSchema } from './abandonment.types.js';
+import { ingestCheckoutAbandonment } from './abandonment.service.js';
 
 const createOrderSchema = z.object({
   amount: z.number().positive().multipleOf(0.01),
@@ -82,3 +87,41 @@ paymentRouter.get('/orders', async (req, res, next) => {
     next(error);
   }
 });
+
+/* POST /api/payments/orders/:orderRef/abandonment — ingest checkout abandonment event (BT-D1) */
+const handleAbandonmentIngest = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const input = CheckoutAbandonmentInputSchema.parse(req.body);
+    const idempotencyKey =
+      req.header('idempotency-key') || req.header('x-idempotency-key') || undefined;
+    const orderRef = Array.isArray(req.params.orderRef) ? req.params.orderRef[0]! : req.params.orderRef!;
+
+    const result = await executeWithIdempotency({
+      merchantId: req.user!.id,
+      idempotencyKey,
+      requestPath: `/api/payments/orders/${orderRef}/abandonment`,
+      payload: input,
+      action: async () => {
+        const ingestionResult = await ingestCheckoutAbandonment({
+          merchantId: req.user!.id,
+          orderRef,
+          input,
+          correlationId: req.correlationId || generateUlid(),
+          idempotencyKey
+        });
+
+        return {
+          statusCode: 202,
+          data: ingestionResult
+        };
+      }
+    });
+
+    res.status(result.statusCode).json(result.data);
+  } catch (error) {
+    next(error);
+  }
+};
+
+paymentRouter.post('/orders/:orderRef/abandonment', handleAbandonmentIngest);
+paymentRouter.post('/orders/:orderRef/abandoned', handleAbandonmentIngest);

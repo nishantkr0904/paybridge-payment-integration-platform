@@ -16,7 +16,8 @@ export const QUEUES = {
   PAYMENT_DLQ: 'payment_dlq',
   WEBHOOK_DELIVERY: 'webhook_queue',
   RECOVERY_INGESTION: 'recovery_ingestion_queue',
-  RETRY_DELAY_HOLDING: 'retry_delay_holding_queue'
+  RETRY_DELAY_HOLDING: 'retry_delay_holding_queue',
+  CHECKOUT_ABANDONMENT: 'checkout_abandonment_queue'
 } as const;
 
 export const EXCHANGES = {
@@ -32,7 +33,8 @@ export const ROUTING_KEYS = {
   PAYMENT_DLQ: 'payment.dlq',
   RECOVERY_DLQ: 'recovery.dlq',
   WEBHOOK_DELIVER: 'webhook.deliver',
-  RETRY_DELAY: 'retry.delay'
+  RETRY_DELAY: 'retry.delay',
+  CHECKOUT_ABANDONED: 'checkout.abandoned'
 } as const;
 
 /* ------------------------------------------------------------------ */
@@ -272,11 +274,53 @@ export async function connectRabbitMQ() {
     });
     await channel.bindQueue(QUEUES.RETRY_DELAY_HOLDING, EXCHANGES.RETRY_DELAY, ROUTING_KEYS.RETRY_DELAY);
 
+    // 9. Setup Checkout Abandonment Queue with dead-lettering to DLX (BT-D1 / SIG-002)
+    await channel.assertQueue(QUEUES.CHECKOUT_ABANDONMENT, {
+      durable: true,
+      arguments: {
+        'x-dead-letter-exchange': EXCHANGES.DLX,
+        'x-dead-letter-routing-key': ROUTING_KEYS.RECOVERY_DLQ
+      }
+    });
+    await channel.bindQueue(QUEUES.CHECKOUT_ABANDONMENT, EXCHANGES.PAYMENT, ROUTING_KEYS.CHECKOUT_ABANDONED);
+
     return { connection, channel };
   } catch (error) {
     console.error('RabbitMQ Connection Error:', error);
     throw error;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Publish Checkout Abandonment Helper (BT-D1 / SIG-002)             */
+/* ------------------------------------------------------------------ */
+
+export async function publishCheckoutAbandoned(
+  event: Record<string, unknown>,
+  customChannel?: amqp.Channel
+): Promise<boolean> {
+  const ch = customChannel || (await getRabbitMQChannel());
+  const correlationId = (event.correlationId as string) || generateUlid();
+  const traceId = (event.traceId as string) || correlationId;
+
+  return ch.publish(
+    EXCHANGES.PAYMENT,
+    ROUTING_KEYS.CHECKOUT_ABANDONED,
+    Buffer.from(JSON.stringify(event)),
+    {
+      persistent: true,
+      deliveryMode: 2,
+      messageId: (event.eventId as string) || generateUlid(),
+      correlationId,
+      headers: {
+        'x-correlation-id': correlationId,
+        'x-trace-id': traceId,
+        'x-merchant-id': event.merchantId,
+        'x-order-ref': event.orderRef,
+        'x-stage': event.stage
+      }
+    }
+  );
 }
 
 export async function getRabbitMQChannel(): Promise<amqp.Channel> {
