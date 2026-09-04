@@ -503,6 +503,93 @@ components:
         trace:
           $ref: '#/components/schemas/TraceExplanation'
           nullable: true
+    CheckoutAbandonmentStage:
+      type: string
+      enum:
+        - arrived_only
+        - method_selected
+        - details_entered
+        - submit_attempted_failed_validation
+        - submit_blocked
+    CheckoutAbandonmentInput:
+      type: object
+      required:
+        - stage
+      properties:
+        sessionId:
+          type: string
+        stage:
+          $ref: '#/components/schemas/CheckoutAbandonmentStage'
+        selectedPaymentMethod:
+          type: string
+          enum: [card, upi, netbanking, wallet]
+          nullable: true
+        dwellTimeSeconds:
+          type: number
+          default: 0
+        validationFailureCount:
+          type: integer
+          default: 0
+        customerEmail:
+          type: string
+          format: email
+          nullable: true
+        customerPhone:
+          type: string
+          nullable: true
+        hasConsentedChannel:
+          type: boolean
+          default: false
+        lastActiveAt:
+          type: string
+          format: date-time
+        abandonedAt:
+          type: string
+          format: date-time
+        source:
+          type: string
+          enum: [client_beacon, timeout_detector, merchant_api, webhook, test]
+          default: merchant_api
+        metadata:
+          type: object
+    AbandonmentIngestionResult:
+      type: object
+      required:
+        - success
+        - eventId
+        - orderRef
+        - merchantId
+        - stage
+        - amountMinorUnits
+        - currency
+        - isDuplicate
+        - routingKey
+        - correlationId
+        - timestamp
+      properties:
+        success:
+          type: boolean
+        eventId:
+          type: string
+        orderRef:
+          type: string
+        merchantId:
+          type: integer
+        stage:
+          $ref: '#/components/schemas/CheckoutAbandonmentStage'
+        amountMinorUnits:
+          type: integer
+        currency:
+          type: string
+        isDuplicate:
+          type: boolean
+        routingKey:
+          type: string
+        correlationId:
+          type: string
+        timestamp:
+          type: string
+          format: date-time
 security:
   - bearerAuth: []
 paths:
@@ -568,6 +655,63 @@ paths:
       responses:
         '202':
           description: Payment processing accepted
+  /payments/orders/{orderRef}/abandonment:
+    post:
+      summary: Ingest checkout abandonment event for an order (BT-D1 / SIG-002)
+      parameters:
+        - in: path
+          name: orderRef
+          required: true
+          schema:
+            type: string
+          description: Unique ULID reference of the order being abandoned
+        - in: header
+          name: Idempotency-Key
+          required: false
+          schema:
+            type: string
+          description: Optional idempotency key for safe replay
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutAbandonmentInput'
+      responses:
+        '202':
+          description: Abandonment event accepted and ingested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbandonmentIngestionResult'
+        '400':
+          description: Malformed or invalid abandonment payload
+        '404':
+          description: Order not found or not owned by authenticated merchant
+        '409':
+          description: Order is in a terminal state (already paid or failed)
+  /payments/orders/{orderRef}/abandoned:
+    post:
+      summary: Alias for ingesting checkout abandonment event (BT-D1 / SIG-002)
+      parameters:
+        - in: path
+          name: orderRef
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckoutAbandonmentInput'
+      responses:
+        '202':
+          description: Abandonment event accepted and ingested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AbandonmentIngestionResult'
   /merchants/policies:
     get:
       summary: List all policies for the authenticated merchant

@@ -200,3 +200,5 @@ export async function listMerchantOrders(merchantId: number, filters: OrderFilte
 export async function getMerchantOrderSummary(merchantId: number) {
   return getOrderCountsByMerchant(merchantId);
 }
+
+export { ingestCheckoutAbandonment } from './abandonment.service.js';
