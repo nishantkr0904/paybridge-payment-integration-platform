@@ -2,6 +2,7 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { pool } from '../../config/database.js';
 import { generateUlid } from '../../utils/ulid.js';
 import { validateTransition } from './case.state-machine.js';
+import { recordCaseTransition, recordRecoverySuccess } from '../../infrastructure/metrics.js';
 import type {
   ActorType,
   CaseEvent,
@@ -305,7 +306,10 @@ export async function createCaseWithEvent(
       throw new Error('Failed to retrieve newly created case');
     }
 
-    return toCase(rows[0]);
+    const created = toCase(rows[0]);
+    recordCaseTransition(null, created.status);
+
+    return created;
   } catch (error) {
     await conn.rollback();
     throw error;
@@ -378,7 +382,20 @@ export async function transitionCaseStatus(
 
     await conn.commit();
 
-    return toCase(updatedRows[0]!);
+    const updatedCase = toCase(updatedRows[0]!);
+    recordCaseTransition(fromStatus, toStatus);
+
+    if (toStatus === 'recovered') {
+      const durationSeconds = (Date.now() - new Date(currentCase.createdAt).getTime()) / 1000;
+      recordRecoverySuccess({
+        durationSeconds: Math.max(0, durationSeconds),
+        actionType: (input.payload?.actionType as string) || 'RETRY_PAYMENT',
+        amountMinorUnits: currentCase.recoverableAmount,
+        currency: currentCase.currency
+      });
+    }
+
+    return updatedCase;
   } catch (error) {
     await conn.rollback();
     throw error;
@@ -440,6 +457,11 @@ export async function bulkShedCases(
     }
 
     await conn.commit();
+
+    for (const c of updatedCases) {
+      recordCaseTransition(c.status, 'suppressed');
+    }
+
     return updatedCases;
   } catch (error) {
     await conn.rollback();

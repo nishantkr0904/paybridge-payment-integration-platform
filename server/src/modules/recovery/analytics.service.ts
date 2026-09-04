@@ -6,6 +6,7 @@ import {
   fetchExecutionAttempts,
   fetchRecoveredCaseStrategies
 } from './analytics.repository.js';
+import { updateRecoveryRate } from '../../infrastructure/metrics.js';
 import type {
   RecoveryAnalytics,
   RecoveryAnalyticsFilters,
@@ -423,6 +424,11 @@ export async function getPlatformRecoveryAnalytics(
     addressableMinorUnits: revenue.addressableMinorUnits,
     recoveredRevenueMinorUnits: revenue.recoveredRevenueMinorUnits
   });
+
+  // Synchronize Prometheus recovery_rate gauge with authoritative platform analytics
+  if (!filters || (!filters.startDate && !filters.endDate && !filters.currency)) {
+    updateRecoveryRate(rates.recoveryRate);
+  }
 
   const latency = calculateLatencyMetrics(latencies.map((l) => l.durationSeconds));
   const strategyPerformance = aggregateStrategyPerformance(attempts, recoveredOutcomes);
