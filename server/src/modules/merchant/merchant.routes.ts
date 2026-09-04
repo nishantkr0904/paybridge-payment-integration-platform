@@ -241,6 +241,24 @@ merchantRouter.get('/recovery/ledger', async (req, res, next) => {
   }
 });
 
+/* GET /api/merchants/recovery/analytics — get recovery analytics for authenticated merchant */
+merchantRouter.get('/recovery/analytics', async (req, res, next) => {
+  try {
+    const { analyticsQuerySchema } = await import('../recovery/case.routes.js');
+    const query = analyticsQuerySchema.parse(req.query);
+    const filters = {
+      startDate: query.startDate ? new Date(query.startDate) : undefined,
+      endDate: query.endDate ? new Date(query.endDate) : undefined,
+      currency: query.currency ? query.currency.toUpperCase() : undefined
+    };
+    const { getRecoveryAnalytics } = await import('../recovery/analytics.service.js');
+    const analytics = await getRecoveryAnalytics(req.user!.id, filters);
+    res.json(analytics);
+  } catch (error) {
+    next(error);
+  }
+});
+
 /* GET /api/merchants/recovery/queue — get prioritized recovery cases */
 merchantRouter.get('/recovery/queue', async (req, res, next) => {
   try {

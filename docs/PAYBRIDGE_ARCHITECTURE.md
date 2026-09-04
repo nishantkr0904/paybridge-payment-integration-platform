@@ -152,9 +152,9 @@ graph TD
 - **Responsibilities:** Maintain the 12-state Case State Machine, calculate deterministic multi-factor priority scores, enforce per-merchant fair round-robin scheduling, execute explicit load shedding under capacity constraints, compute the 0-variance Recoverable Revenue & Leakage Ledger, schedule actions, trigger diagnosis, and handle operator overrides.
 - **Dependencies:** Operational MySQL (`cases`, `case_events`), RabbitMQ (`recovery_ingestion_queue`), Redis.
 
-### Recovery Analytics Service (New — BT-C1)
-- **Purpose:** Read-only analytics engine computing recovery performance KPIs, time-to-recovery latency distributions, and strategy breakdowns (§ADB-001–004, `BT-C1`).
-- **Responsibilities:** Aggregate case volumes (eligible vs. ineligible), compute multi-tier recovery rates handling zero-denominators deterministically, derive time-to-recovery (TTR) percentiles (p50, p90, p99) from immutable `case_events` timestamps, measure strategy/action efficiency, enforce strict repository-level tenant isolation (`merchant_id`), and reconcile with exact 0-variance against the authoritative `RevenueLedger`.
+### Recovery Analytics Service & HTTP API (New — BT-C1 / BT-C2)
+- **Purpose:** Read-only analytics engine computing recovery performance KPIs, time-to-recovery latency distributions, and strategy breakdowns (§ADB-001–004, `BT-C1`, `BT-C2`).
+- **Responsibilities:** Aggregate case volumes (eligible vs. ineligible), compute multi-tier recovery rates handling zero-denominators deterministically, derive time-to-recovery (TTR) percentiles (p50, p90, p99) from immutable `case_events` timestamps, measure strategy/action efficiency, enforce strict repository-level tenant isolation (`merchant_id`), and reconcile with exact 0-variance against the authoritative `RevenueLedger`. Exposed via tenant-scoped REST endpoints `GET /api/recovery/analytics` and `GET /api/merchants/recovery/analytics` with Zod parameter validation and correlation tracking (`BT-C2`).
 - **Dependencies:** Operational MySQL (`cases`, `case_events`), `ledger.service.ts`. Read-only; does not mutate state or depend on external APIs.
 
 

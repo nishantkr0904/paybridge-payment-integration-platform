@@ -13,6 +13,8 @@ import {
 } from './case.service.js';
 import { findTracesByCaseId } from '../ai/tracing/trace.service.js';
 import type { CaseStatus } from './case.types.js';
+import { getRecoveryAnalytics } from './analytics.service.js';
+import type { RecoveryAnalyticsFilters } from './analytics.types.js';
 
 const CASE_STATUSES = [
   'detected',
@@ -28,6 +30,43 @@ const CASE_STATUSES = [
   'expired',
   'failed'
 ] as const;
+
+const isoDatePattern = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})?)?$/;
+
+export const analyticsQuerySchema = z
+  .object({
+    startDate: z
+      .string()
+      .refine(
+        (val) => isoDatePattern.test(val) && !isNaN(Date.parse(val)),
+        { message: 'startDate must be a valid ISO 8601 date or datetime string.' }
+      )
+      .optional(),
+    endDate: z
+      .string()
+      .refine(
+        (val) => isoDatePattern.test(val) && !isNaN(Date.parse(val)),
+        { message: 'endDate must be a valid ISO 8601 date or datetime string.' }
+      )
+      .optional(),
+    currency: z
+      .string()
+      .trim()
+      .length(3, 'currency must be a 3-character ISO currency code.')
+      .optional()
+  })
+  .refine(
+    (data) => {
+      if (data.startDate && data.endDate) {
+        return new Date(data.startDate).getTime() <= new Date(data.endDate).getTime();
+      }
+      return true;
+    },
+    {
+      message: 'startDate must be less than or equal to endDate.',
+      path: ['startDate']
+    }
+  );
 
 const listCasesQuerySchema = z.object({
   status: z.enum(CASE_STATUSES).optional(),
@@ -49,6 +88,29 @@ const operatorActionSchema = z.object({
 export const caseRouter = Router();
 
 caseRouter.use(authenticate);
+
+/* ------------------------------------------------------------------ */
+/*  Recovery Analytics & Performance KPIs (ADB-001–004 / BT-C1 / BT-C2) */
+/* ------------------------------------------------------------------ */
+
+/* GET /api/recovery/analytics — get recovery performance KPIs, latency, and strategy performance */
+caseRouter.get('/analytics', async (req, res, next) => {
+  try {
+    const query = analyticsQuerySchema.parse(req.query);
+    const merchantId = req.user!.id;
+
+    const filters: RecoveryAnalyticsFilters = {
+      startDate: query.startDate ? new Date(query.startDate) : undefined,
+      endDate: query.endDate ? new Date(query.endDate) : undefined,
+      currency: query.currency ? query.currency.toUpperCase() : undefined
+    };
+
+    const analytics = await getRecoveryAnalytics(merchantId, filters);
+    res.json(analytics);
+  } catch (error) {
+    next(error);
+  }
+});
 
 /* ------------------------------------------------------------------ */
 /*  Case Listing & Prioritised Triage Queue (RDB-001)                 */
