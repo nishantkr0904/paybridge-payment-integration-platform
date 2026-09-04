@@ -8,7 +8,11 @@ import { findActivePolicyByMerchantId } from '../modules/policy/policy.repositor
 import { findCaseById, findCaseEventsByCaseId } from '../modules/recovery/case.repository.js';
 import { transitionCase } from '../modules/recovery/case.service.js';
 import { TERMINAL_STATES } from '../modules/recovery/case.state-machine.js';
-import { actionExecutionDuplicatesSuppressedTotal, actionExecutionsTotal } from '../infrastructure/metrics.js';
+import {
+  actionExecutionDuplicatesSuppressedTotal,
+  actionExecutionsTotal,
+  recordRecoveryAttempt
+} from '../infrastructure/metrics.js';
 import { logger } from '../utils/logger.js';
 import { generateUlid } from '../utils/ulid.js';
 
@@ -290,6 +294,7 @@ export async function handleActionMessage(
         correlationId
       );
     }
+    recordRecoveryAttempt(payload.actionType);
 
     // 8. Execute Gateway Charge with Stable Idempotency Reference (Requirement 8)
     const baseTxnRef =
@@ -333,7 +338,8 @@ export async function handleActionMessage(
           providerIdempotencyRef,
           gatewayResponse: gatewayResult.gatewayResponse,
           retryAttempt: payload.retryAttempt,
-          amountRecovered: recoveryCase.recoverableAmount
+          amountRecovered: recoveryCase.recoverableAmount,
+          actionType: payload.actionType
         },
         correlationId
       );
