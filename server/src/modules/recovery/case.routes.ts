@@ -6,6 +6,7 @@ import { canTransition, InvalidCaseTransitionError } from './case.state-machine.
 import {
   getCaseById,
   getCaseByRef,
+  getCaseExplainability,
   getCaseTimeline,
   getPrioritizedQueue,
   listCases,
@@ -217,6 +218,19 @@ caseRouter.get('/cases/:caseId/traces', async (req, res, next) => {
 
     const traces = await findTracesByCaseId(caseId, merchantId);
     res.json({ traces });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/* GET /api/recovery/cases/:idOrRef/explainability — get unified explainability payload (BT-C4 / BC-7.5 / BEX-003) */
+caseRouter.get('/cases/:idOrRef/explainability', async (req, res, next) => {
+  try {
+    const { idOrRef } = req.params;
+    const merchantId = req.user!.id;
+
+    const explainability = await getCaseExplainability(idOrRef, merchantId);
+    res.json(explainability);
   } catch (error) {
     next(error);
   }

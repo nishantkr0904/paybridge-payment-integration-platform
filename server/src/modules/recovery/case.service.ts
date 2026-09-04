@@ -309,3 +309,5 @@ export async function getQueueMetrics(merchantId?: number): Promise<QueueMetrics
     shedVolumeTotal: shedVolume
   };
 }
+
+export { getCaseExplainability } from './explainability.service.js';

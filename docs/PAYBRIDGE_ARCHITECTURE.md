@@ -157,6 +157,10 @@ graph TD
 - **Responsibilities:** Aggregate case volumes (eligible vs. ineligible), compute multi-tier recovery rates handling zero-denominators deterministically, derive time-to-recovery (TTR) percentiles (p50, p90, p99) from immutable `case_events` timestamps, measure strategy/action efficiency, enforce strict repository-level tenant isolation (`merchant_id`), and reconcile with exact 0-variance against the authoritative `RevenueLedger`. Exposed via tenant-scoped REST endpoints `GET /api/recovery/analytics` and `GET /api/merchants/recovery/analytics` with Zod parameter validation and correlation tracking (`BT-C2`).
 - **Dependencies:** Operational MySQL (`cases`, `case_events`), `ledger.service.ts`. Read-only; does not mutate state or depend on external APIs.
 
+### Unified Explainability Service & Payload (New — BT-C4 / BC-7.5 / BEX-003)
+- **Purpose:** Unified explainability engine synthesizing diagnosis, decision planning, deterministic policy evaluation, and agent reasoning traces into a single coherent JSON artifact for operators and merchants.
+- **Responsibilities:** Aggregate case identity, lifecycle disposition, model diagnosis root cause/confidence/evidence, proposed recovery action plan, deterministic policy evaluation & governing rule limits, and agent execution trace summaries. Enforces strict repository-level tenant isolation (`merchant_id`), deep PII sanitization (`deepRedact`), runtime validation (`assertZeroPII`), and integer minor-unit financial representation. Exposed via tenant-scoped REST endpoint `GET /api/recovery/cases/:idOrRef/explainability`.
+- **Dependencies:** Operational MySQL (`cases`, `case_events`, `agent_traces`, `policies`), `policy.engine.ts`, `trace.service.ts`, `redaction.service.ts`. Read-only; produces zero side effects, state transitions, or external LLM invocations.
 
 ### AI Agent Service (New)
 - **Purpose:** Encapsulate all non-deterministic LLM interactions.
