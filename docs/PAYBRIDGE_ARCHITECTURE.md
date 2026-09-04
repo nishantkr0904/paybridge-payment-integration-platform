@@ -26,11 +26,13 @@ The architecture treats AI as a **non-deterministic, highly capable component su
 ### Current Implementation & Services
 The existing PayBridge implementation is a modular monolith written in Node.js (TypeScript) with an Express API and a Vite/React SPA. The backend is conceptually segmented into `auth`, `payment`, `webhook`, and `merchant` modules. 
 
-The system runs as four distinct processes sharing a single codebase:
+The system runs as six distinct processes / containerized services sharing a single codebase:
 1. `paybridge-api`: Serves HTTP REST traffic.
 2. `paybridge-payment-worker`: Consumes from `payment_processing_queue` to simulate gateway interactions.
 3. `paybridge-webhook-worker`: Consumes from `webhook_delivery_queue` for outbound HTTP calls.
 4. `paybridge-dlq-worker`: Consumes dead letters.
+5. `paybridge-action-worker`: Consumes policy-approved recovery actions from `payment_processing_queue` with Redis distributed locking, effect idempotency checks, and gateway idempotency protection.
+6. `paybridge-recovery-worker`: Consumes payment failure signals from `recovery_ingestion_queue` to ingest failures, create/reuse recovery cases, and drive Case State Machine transitions.
 
 ### Communication & Database
 - **Tight Coupling:** Workers directly import repository layers instead of communicating via APIs or gRPC.
@@ -135,6 +137,16 @@ graph TD
 - **Responsibilities:** Consume payment jobs from `payment_processing_queue` (prefetch=1), inspect durable transaction state in MySQL (`findTransactionById`), acknowledge duplicate deliveries of terminal transactions (`status: 'success' || 'failed'`) without re-invoking gateway side effects, acquire worker-level distributed lock (`lock:worker:txn:${transactionId}`), simulate gateway responses, persist transaction/order updates to MySQL, publish webhook events, and manage retry/DLQ progression (`payment_dlq`).
 - **Dependencies:** Operational MySQL, RabbitMQ (`EXCHANGES.PAYMENT`, `EXCHANGES.WEBHOOK`, `EXCHANGES.DLX`), Redis (Distributed Locks).
 
+### Action Worker
+- **Purpose:** Asynchronous execution of policy-approved recovery actions within bounded autonomy constraints (`TASK-402`, `RCV-010`, `BT-A1`).
+- **Responsibilities:** Consume action jobs from `payment_processing_queue` (`prefetch(1)`), validate payloads against `ActionJobPayloadSchema`, enforce tenant boundary isolation, re-validate policy rules against MySQL `policies`, acquire worker-level distributed locks (`lock:worker:action:${caseId}` / `lock:worker:txn:${transactionId}` via Redis), enforce deterministic effect idempotency keys (`idem:${caseId}:${actionType}:${retryAttempt}`) to suppress duplicate executions, use stable upstream provider idempotency references (`${txnRef}_att${attempt}`) across gateway calls, atomically advance Case State Machine (`executing`, `recovered`, `awaiting_outcome`, `unrecovered`), and schedule delayed retries via RabbitMQ TTL/DLX holding topology (`retry_delay_holding_queue`) on recoverable declines.
+- **Dependencies:** Operational MySQL (`cases`, `case_events`, `policies`, `transactions`), Redis 7 (Distributed Locking & Idempotency), RabbitMQ (`payment_processing_queue`, `retry_delay_holding_queue`, DLX).
+
+### Recovery Worker
+- **Purpose:** Durable asynchronous ingestion and lifecycle initialization of payment failure events (`TASK-102`, `RCV-001`, `BT-A1`).
+- **Responsibilities:** Consume payment failure signals from `recovery_ingestion_queue` (`prefetch(1)`), parse JSON payloads with structured error logging, validate payment failure attributes, invoke `ingestPaymentFailure` in the Recovery Service, initialize or deduplicate recovery cases in MySQL, record `payment.failed` case events, advance the Case State Machine, and acknowledge messages only after durable commit (routing malformed payloads directly to DLQ).
+- **Dependencies:** Operational MySQL (`cases`, `case_events`, `transactions`), RabbitMQ (`recovery_ingestion_queue`). Note: Does not depend directly on Redis.
+
 ### Recovery Service (New)
 - **Purpose:** Orchestrate the lifecycle of a failed transaction, prioritize cases, and quantify recoverable leakage.
 - **Responsibilities:** Maintain the 12-state Case State Machine, calculate deterministic multi-factor priority scores, enforce per-merchant fair round-robin scheduling, execute explicit load shedding under capacity constraints, compute the 0-variance Recoverable Revenue & Leakage Ledger, schedule actions, trigger diagnosis, and handle operator overrides.
@@ -189,8 +201,10 @@ The system implements an extensible provider abstraction layer (`LLMProvider`) o
   - `webhook_exchange` (Direct) - Routes webhook delivery notifications.
   - `dlx_exchange` (Direct) - Dead-letter exchange capturing unprocessable, malformed, or retry-exhausted messages.
 - **Queues:**
-  - `payment_processing_queue` - Consumed by `payment.worker.ts` with `prefetch(1)`.
+  - `payment_processing_queue` - Consumed by `payment.worker.ts` and `action.worker.ts` with `prefetch(1)`.
+  - `recovery_ingestion_queue` - Consumed by `recovery.worker.ts` with `prefetch(1)`.
   - `webhook_delivery_queue` - Consumed by `webhook.worker.ts`.
+  - `retry_delay_holding_queue` - Native TTL/DLX delayed holding queue for scheduled retries (`TASK-401`).
   - `payment_dlq` - Bound to `dlx_exchange` with routing key `payment_dlq_key`.
 - **Worker Execution & Retry Semantics:**
   - Transient failures are retried up to `MAX_PAYMENT_RETRIES = 3`.
@@ -278,7 +292,7 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 ## 12. Observability Architecture
 
 ### Instrumentation
-- **Structured Logging & Correlation Propagation:** Express middleware validates/normalizes `x-correlation-id` / `x-request-id` headers (1–128 chars, safe regex charset) or generates ULID fallbacks, setting `req.correlationId` and `x-correlation-id` response headers. Pino generates structured JSON logs containing `correlationId` and `traceId`. RabbitMQ dispatches attach correlation metadata to message headers and AMQP properties. Workers (`payment.worker.ts`, `webhook.worker.ts`, `dlq.worker.ts`) extract correlation context and instantiate contextual child Pino loggers (`logger.child({ correlationId, traceId, ... })`), preserving headers across downstream webhook publications and retries. Note: Full distributed tracing (OpenTelemetry spans/exporters) is a future target capability.
+- **Structured Logging & Correlation Propagation:** Express middleware validates/normalizes `x-correlation-id` / `x-request-id` headers (1–128 chars, safe regex charset) or generates ULID fallbacks, setting `req.correlationId` and `x-correlation-id` response headers. Pino generates structured JSON logs containing `correlationId` and `traceId`. RabbitMQ dispatches attach correlation metadata to message headers and AMQP properties. Workers (`payment.worker.ts`, `webhook.worker.ts`, `dlq.worker.ts`, `action.worker.ts`, `recovery.worker.ts`) extract correlation context and instantiate contextual child Pino loggers (`logger.child({ correlationId, traceId, ... })`), preserving headers across downstream webhook publications and retries. Note: Full distributed tracing (OpenTelemetry spans/exporters) is a future target capability.
 - **Metrics & HTTP RED SLIs:** `prom-client` instruments default Node.js runtime metrics and custom HTTP RED metrics (`http_requests_total`, `http_request_duration_seconds` with buckets `[0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`). Route normalization maps parameterized paths (`/api/payments/orders/:orderRef/pay`, bounded `unmatched` for 404s) to eliminate high cardinality. Exposed via `GET /metrics` and `GET /api/metrics` with `text/plain; version=0.0.4; charset=utf-8`. Prometheus scrapes `paybridge-api:4000/api/metrics` (Defect D1 remediated). Future target SLIs will track "Time-to-Recovery", "Policy Veto Rate", and "Agent Latency".
 - **Dashboards:** Grafana visualizes operational health, HTTP RED metrics, SLA breaches, and RabbitMQ queue depths.
 
@@ -287,7 +301,7 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 ## 13. Deployment Architecture
 
 ### Current to Future State
-- **Current:** Docker Compose.
+- **Current:** Docker Compose (12 services: MySQL 8.4, Redis 7, RabbitMQ 3, Prometheus, Grafana, API, Client, and 5 dedicated worker services: `paybridge-payment-worker`, `paybridge-webhook-worker`, `paybridge-dlq-worker`, `paybridge-action-worker`, `paybridge-recovery-worker`).
 - **Target:** Kubernetes (EKS/GKE).
 - **CI/CD:** GitHub Actions executes automated tests, builds immutable Docker images tagged with Git SHA, and deploys via a GitOps model (e.g., ArgoCD).
 - **Configuration:** Runtime configurations and secrets are injected via Kubernetes Secrets / HashiCorp Vault, replacing static `.env` files.
