@@ -175,7 +175,9 @@ Prompts are versioned and stored in the database, treated as configuration. The 
 Agents interact with the system strictly via predefined Tools (e.g., `get_merchant_rules()`, `calculate_optimal_time()`). The LLM does not execute code or query databases directly. Total token usage and execution timeouts (e.g., 15s max) are strictly enforced.
 
 ### LLM Failover & Abstraction
-The system implements a provider abstraction layer. If the primary provider (e.g., OpenAI) returns 5xx errors or rate limits, the request seamlessly fails over to a secondary provider (e.g., Anthropic) using a semantically equivalent prompt mapping.
+The system implements an extensible provider abstraction layer (`LLMProvider`) orchestrated by `OrchestratedLLMProvider` with circuit breaking, concurrency limiting, and exponential retry on transient transport errors.
+- **Mock Provider (`MockLLMProvider`):** In-memory, deterministic provider for automated unit, integration, and CI testing with zero outbound network calls.
+- **OpenAI Provider (`OpenAIProvider` / BT-B1):** Production adapter utilizing the official OpenAI Node.js SDK (`openai@^7.10.0`), featuring task-based model mapping (`diagnosis` $\to$ `gpt-4o-mini`, `decision` $\to$ `gpt-4o`), JSON mode schema enforcement, token usage accounting, and strict credential protection.
 
 ---
 

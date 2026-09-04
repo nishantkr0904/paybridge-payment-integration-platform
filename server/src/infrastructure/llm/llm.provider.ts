@@ -12,6 +12,7 @@ import {
   LLMTimeoutError
 } from './llm.types.js';
 import { MockLLMProvider } from './mock-provider.js';
+import { OpenAIProvider } from './openai-provider.js';
 import { executeWithRetry } from './retry.js';
 
 /* ------------------------------------------------------------------ */
@@ -81,6 +82,38 @@ export function validateLLMConfig(config = loadLLMConfig()): void {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Raw Provider Factory                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Factory for creating raw LLM providers based on configuration.
+ */
+export function createRawLLMProvider(config = loadLLMConfig()): LLMProvider {
+  switch (config.provider) {
+    case 'mock':
+      return new MockLLMProvider();
+    case 'openai':
+      if (!config.openaiApiKey || config.openaiApiKey.trim() === '') {
+        throw new LLMConfigurationError(
+          'OPENAI_API_KEY is required to initialize OpenAIProvider.'
+        );
+      }
+      return new OpenAIProvider({
+        apiKey: config.openaiApiKey,
+        taskModelMapping: config.taskModelMapping
+      });
+    case 'anthropic':
+      throw new LLMConfigurationError(
+        'Anthropic provider is not implemented yet. Use LLM_PROVIDER=mock or LLM_PROVIDER=openai.'
+      );
+    default:
+      throw new LLMConfigurationError(
+        `Unsupported LLM provider: '${config.provider}'. Supported providers are: 'mock', 'openai'.`
+      );
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Orchestrated LLM Provider Wrapper                                 */
 /* ------------------------------------------------------------------ */
 
@@ -97,7 +130,7 @@ export class OrchestratedLLMProvider implements LLMProvider {
     concurrencyLimiter?: ConcurrencyLimiter
   ) {
     this.config = config ?? loadLLMConfig();
-    this.rawProvider = rawProvider ?? new MockLLMProvider();
+    this.rawProvider = rawProvider ?? createRawLLMProvider(this.config);
     this.circuitBreaker =
       circuitBreaker ??
       new CircuitBreaker({
@@ -226,7 +259,7 @@ let defaultProviderInstance: OrchestratedLLMProvider | null = null;
 export function getLLMProvider(): OrchestratedLLMProvider {
   if (!defaultProviderInstance) {
     const config = loadLLMConfig();
-    const rawProvider = new MockLLMProvider();
+    const rawProvider = createRawLLMProvider(config);
     defaultProviderInstance = new OrchestratedLLMProvider(rawProvider, config);
   }
   return defaultProviderInstance;
