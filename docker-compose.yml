@@ -141,6 +141,53 @@ services:
       rabbitmq:
         condition: service_healthy
 
+  paybridge-action-worker:
+    build:
+      context: .
+      dockerfile: docker/server.Dockerfile
+    container_name: paybridge-action-worker
+    restart: unless-stopped
+    command: ["npm", "run", "start:action-worker", "--workspace", "server"]
+    environment:
+      - NODE_ENV=production
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=paybridge
+      - MYSQL_PASSWORD=change_me
+      - MYSQL_DATABASE=paybridge
+      - JWT_ACCESS_SECRET=development_access_secret_change_in_production
+      - JWT_REFRESH_SECRET=development_refresh_secret_change_in_production
+      - REDIS_URL=redis://redis:6379
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  paybridge-recovery-worker:
+    build:
+      context: .
+      dockerfile: docker/server.Dockerfile
+    container_name: paybridge-recovery-worker
+    restart: unless-stopped
+    command: ["npm", "run", "start:recovery-worker", "--workspace", "server"]
+    environment:
+      - NODE_ENV=production
+      - MYSQL_HOST=mysql
+      - MYSQL_USER=paybridge
+      - MYSQL_PASSWORD=change_me
+      - MYSQL_DATABASE=paybridge
+      - JWT_ACCESS_SECRET=development_access_secret_change_in_production
+      - JWT_REFRESH_SECRET=development_refresh_secret_change_in_production
+      - RABBITMQ_URL=amqp://rabbitmq:5672
+    depends_on:
+      mysql:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
   paybridge-client:
     build:
       context: .
