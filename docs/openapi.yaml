@@ -326,6 +326,183 @@ components:
               type: boolean
             varianceMinorUnits:
               type: integer
+    CaseIdentitySummary:
+      type: object
+      required:
+        - id
+        - caseRef
+        - merchantId
+        - orderId
+        - status
+        - recoverableAmountMinorUnits
+        - currency
+        - originatingSignal
+        - correlationId
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: integer
+        caseRef:
+          type: string
+        merchantId:
+          type: integer
+        orderId:
+          type: integer
+        transactionId:
+          type: integer
+          nullable: true
+        status:
+          type: string
+        recoverableAmountMinorUnits:
+          type: integer
+        currency:
+          type: string
+        originatingSignal:
+          type: string
+        failureCategory:
+          type: string
+          nullable: true
+        correlationId:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+    RecoveryOutcomeSummary:
+      type: object
+      required:
+        - status
+        - isTerminal
+      properties:
+        status:
+          type: string
+        isTerminal:
+          type: boolean
+        recoveredAmountMinorUnits:
+          type: integer
+          nullable: true
+        terminalReason:
+          type: string
+          nullable: true
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+    GoverningPolicySummary:
+      type: object
+      required:
+        - id
+        - version
+        - autonomyTier
+        - isActive
+        - maxRetries
+        - maxContactsPerCustomerPerWeek
+        - dailyBudgetMinorUnits
+        - maxIncentivePercent
+        - timezone
+      properties:
+        id:
+          type: integer
+        version:
+          type: integer
+        autonomyTier:
+          type: string
+          enum: [T0, T1, T2, T3, T4]
+        isActive:
+          type: boolean
+        maxRetries:
+          type: integer
+        maxContactsPerCustomerPerWeek:
+          type: integer
+        dailyBudgetMinorUnits:
+          type: integer
+        maxIncentivePercent:
+          type: number
+        quietHoursStart:
+          type: string
+          nullable: true
+        quietHoursEnd:
+          type: string
+          nullable: true
+        timezone:
+          type: string
+    PolicyExplanation:
+      type: object
+      properties:
+        evaluation:
+          $ref: '#/components/schemas/PolicyEvaluationResult'
+          nullable: true
+        governingPolicy:
+          $ref: '#/components/schemas/GoverningPolicySummary'
+          nullable: true
+    TraceItemSummary:
+      type: object
+      required:
+        - traceRef
+        - agentType
+        - status
+        - durationMs
+        - inputTokens
+        - outputTokens
+        - createdAt
+      properties:
+        traceRef:
+          type: string
+        agentType:
+          type: string
+          enum: [diagnosis, decision, multi_agent]
+        status:
+          type: string
+          enum: [success, failed, aborted, vetoed]
+        durationMs:
+          type: integer
+        inputTokens:
+          type: integer
+        outputTokens:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+    TraceExplanation:
+      type: object
+      required:
+        - traces
+      properties:
+        primaryTraceRef:
+          type: string
+          nullable: true
+        summary:
+          type: object
+          nullable: true
+        traces:
+          type: array
+          items:
+            $ref: '#/components/schemas/TraceItemSummary'
+    UnifiedExplainabilityPayload:
+      type: object
+      required:
+        - case
+        - recoveryOutcome
+      properties:
+        case:
+          $ref: '#/components/schemas/CaseIdentitySummary'
+        recoveryOutcome:
+          $ref: '#/components/schemas/RecoveryOutcomeSummary'
+        diagnosis:
+          type: object
+          nullable: true
+        decision:
+          type: object
+          nullable: true
+        policy:
+          $ref: '#/components/schemas/PolicyExplanation'
+          nullable: true
+        trace:
+          $ref: '#/components/schemas/TraceExplanation'
+          nullable: true
 security:
   - bearerAuth: []
 paths:
@@ -733,6 +910,28 @@ paths:
       responses:
         '200':
           description: Agent reasoning traces
+  /recovery/cases/{idOrRef}/explainability:
+    get:
+      summary: Get unified explainability payload combining diagnosis, decision, policy evaluation, and trace
+      description: Returns a single unified JSON explanation for a recovery case, aggregating diagnosis explanation, proposed decision plan, deterministic policy evaluation, governing merchant rules, and agent reasoning traces.
+      parameters:
+        - in: path
+          name: idOrRef
+          required: true
+          description: Numeric recovery case ID or external ULID case reference
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Unified explainability payload
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnifiedExplainabilityPayload'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Recovery case not found or cross-tenant access prohibited
   /recovery/cases/{caseId}/actions:
     post:
       summary: Execute operator action on case (approve, reject, close)
