@@ -289,6 +289,63 @@ describe('TASK-301: LLM Provider Abstraction & Model Routing (AI-001 / Phase 3 M
       }).toThrow(LLMConfigurationError);
     });
 
+    it('throws LLMConfigurationError at boot when Gemini provider is selected without API key', () => {
+      expect(() => {
+        validateLLMConfig({
+          aiEnabled: true,
+          provider: 'gemini',
+          defaultTimeoutMs: 20000,
+          maxConcurrency: 10,
+          circuitBreakerThreshold: 5,
+          circuitBreakerResetMs: 30000,
+          geminiApiKey: undefined,
+          taskModelMapping: {
+            diagnosis: 'gemini-3.6-flash',
+            decision: 'gemini-3.1-pro-preview',
+            summarisation: 'gemini-3.6-flash'
+          }
+        });
+      }).toThrow(LLMConfigurationError);
+    });
+
+    it('throws LLMConfigurationError at boot when OpenRouter provider is selected without API key', () => {
+      expect(() => {
+        validateLLMConfig({
+          aiEnabled: true,
+          provider: 'openrouter',
+          defaultTimeoutMs: 20000,
+          maxConcurrency: 10,
+          circuitBreakerThreshold: 5,
+          circuitBreakerResetMs: 30000,
+          openrouterApiKey: undefined,
+          taskModelMapping: {
+            diagnosis: 'google/gemini-3.6-flash',
+            decision: 'google/gemini-3.1-pro-preview',
+            summarisation: 'google/gemini-3.6-flash'
+          }
+        });
+      }).toThrow(LLMConfigurationError);
+    });
+
+    it('throws LLMConfigurationError at boot when OmniRoute provider is selected without API key', () => {
+      expect(() => {
+        validateLLMConfig({
+          aiEnabled: true,
+          provider: 'omniroute',
+          defaultTimeoutMs: 20000,
+          maxConcurrency: 10,
+          circuitBreakerThreshold: 5,
+          circuitBreakerResetMs: 30000,
+          omnirouteApiKey: undefined,
+          taskModelMapping: {
+            diagnosis: 'antigravity/gemini-3.6-flash-low',
+            decision: 'antigravity/gemini-3.1-pro-low',
+            summarisation: 'antigravity/gemini-3.6-flash-low'
+          }
+        });
+      }).toThrow(LLMConfigurationError);
+    });
+
     it('throws LLMConfigurationError at boot when Anthropic provider is selected without API key', () => {
       expect(() => {
         validateLLMConfig({

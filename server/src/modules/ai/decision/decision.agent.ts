@@ -1,5 +1,5 @@
 import { getLLMProvider } from '../../../infrastructure/llm/llm.provider.js';
-import type { LLMProvider } from '../../../infrastructure/llm/llm.types.js';
+import { formatBoundedFallbackReason, type LLMProvider } from '../../../infrastructure/llm/llm.types.js';
 import { logger } from '../../../utils/logger.js';
 import { generateUlid } from '../../../utils/ulid.js';
 import { REPAIR_DECISION_PROMPT_TEMPLATE } from '../prompts/decision.prompt.js';
@@ -163,6 +163,7 @@ export async function planRecoveryDecision(
       { correlationId, err },
       `[DecisionAgent] LLM provider error (${errorMsg}). Engaging deterministic rules fallback.`
     );
-    return deriveRulesDecisionPlan(input.context, input.diagnosis, correlationId, errorMsg);
+    const fallbackReason = formatBoundedFallbackReason(err);
+    return deriveRulesDecisionPlan(input.context, input.diagnosis, correlationId, fallbackReason);
   }
 }

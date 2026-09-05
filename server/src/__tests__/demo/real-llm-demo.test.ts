@@ -78,6 +78,123 @@ describe('E1: Real LLM Demonstration Scenario & Deterministic Safety', () => {
       }
     });
 
+    it('refuses real Gemini mode when GEMINI_API_KEY is missing from environment', () => {
+      delete process.env.GEMINI_API_KEY;
+
+      expect(() => {
+        resolveDemoProvider('gemini');
+      }).toThrow(LLMConfigurationError);
+
+      expect(() => {
+        resolveDemoProvider('gemini');
+      }).toThrow(/GEMINI_API_KEY is required/i);
+    });
+
+    it('refuses real Gemini mode when GEMINI_API_KEY is empty whitespace', () => {
+      process.env.GEMINI_API_KEY = '   ';
+
+      expect(() => {
+        resolveDemoProvider('gemini');
+      }).toThrow(LLMConfigurationError);
+    });
+
+    it('correctly selects GeminiProvider through the provider factory when configured with GEMINI_API_KEY', () => {
+      process.env.GEMINI_API_KEY = 'AIzaSyMockKeyForDemoFactoryTest12345';
+      process.env.GEMINI_DIAGNOSIS_MODEL = 'gemini-1.5-flash-custom';
+      process.env.GEMINI_DECISION_MODEL = 'gemini-1.5-pro-custom';
+
+      try {
+        const { provider, providerName, models } = resolveDemoProvider('gemini');
+
+        expect(provider).toBeInstanceOf(ObservingLLMProviderWrapper);
+        expect(providerName).toContain('GeminiProvider');
+        expect(models.diagnosis).toBe('gemini-1.5-flash-custom');
+        expect(models.decision).toBe('gemini-1.5-pro-custom');
+      } finally {
+        delete process.env.GEMINI_API_KEY;
+        delete process.env.GEMINI_DIAGNOSIS_MODEL;
+        delete process.env.GEMINI_DECISION_MODEL;
+      }
+    });
+
+    it('refuses real OpenRouter mode when OPENROUTER_API_KEY is missing from environment', () => {
+      delete process.env.OPENROUTER_API_KEY;
+
+      expect(() => {
+        resolveDemoProvider('openrouter');
+      }).toThrow(LLMConfigurationError);
+
+      expect(() => {
+        resolveDemoProvider('openrouter');
+      }).toThrow(/OPENROUTER_API_KEY is required/i);
+    });
+
+    it('refuses real OpenRouter mode when OPENROUTER_API_KEY is empty whitespace', () => {
+      process.env.OPENROUTER_API_KEY = '   ';
+
+      expect(() => {
+        resolveDemoProvider('openrouter');
+      }).toThrow(LLMConfigurationError);
+    });
+
+    it('correctly selects OpenRouterGeminiProvider through the provider factory when configured with OPENROUTER_API_KEY', () => {
+      process.env.OPENROUTER_API_KEY = 'sk-or-v1-mockkeyforfactorytest12345';
+      process.env.OPENROUTER_DIAGNOSIS_MODEL = 'google/gemini-flash-custom';
+      process.env.OPENROUTER_DECISION_MODEL = 'google/gemini-pro-custom';
+
+      try {
+        const { provider, providerName, models } = resolveDemoProvider('openrouter');
+
+        expect(provider).toBeInstanceOf(ObservingLLMProviderWrapper);
+        expect(providerName).toContain('OpenRouterGeminiProvider');
+        expect(models.diagnosis).toBe('google/gemini-flash-custom');
+        expect(models.decision).toBe('google/gemini-pro-custom');
+      } finally {
+        delete process.env.OPENROUTER_API_KEY;
+        delete process.env.OPENROUTER_DIAGNOSIS_MODEL;
+        delete process.env.OPENROUTER_DECISION_MODEL;
+      }
+    });
+
+    it('refuses real OmniRoute mode when OMNIROUTE_API_KEY is missing from environment', () => {
+      const origOmni = process.env.OMNIROUTE_API_KEY;
+      const origAnth = process.env.ANTHROPIC_AUTH_TOKEN;
+      delete process.env.OMNIROUTE_API_KEY;
+      delete process.env.ANTHROPIC_AUTH_TOKEN;
+
+      try {
+        expect(() => {
+          resolveDemoProvider('omniroute');
+        }).toThrow(LLMConfigurationError);
+
+        expect(() => {
+          resolveDemoProvider('omniroute');
+        }).toThrow(/OMNIROUTE_API_KEY .* is required/i);
+      } finally {
+        if (origOmni !== undefined) process.env.OMNIROUTE_API_KEY = origOmni;
+        if (origAnth !== undefined) process.env.ANTHROPIC_AUTH_TOKEN = origAnth;
+      }
+    });
+
+    it('correctly selects OmniRouteProvider through the provider factory when configured', () => {
+      process.env.OMNIROUTE_API_KEY = 'sk-d4c1f343e-test-key-mock';
+      process.env.OMNIROUTE_DIAGNOSIS_MODEL = 'antigravity/gemini-flash-custom';
+      process.env.OMNIROUTE_DECISION_MODEL = 'antigravity/gemini-pro-custom';
+
+      try {
+        const { provider, providerName, models } = resolveDemoProvider('omniroute');
+
+        expect(provider).toBeInstanceOf(ObservingLLMProviderWrapper);
+        expect(providerName).toContain('OmniRouteProvider');
+        expect(models.diagnosis).toBe('antigravity/gemini-flash-custom');
+        expect(models.decision).toBe('antigravity/gemini-pro-custom');
+      } finally {
+        delete process.env.OMNIROUTE_API_KEY;
+        delete process.env.OMNIROUTE_DIAGNOSIS_MODEL;
+        delete process.env.OMNIROUTE_DECISION_MODEL;
+      }
+    });
+
     it('supports custom provider injection via options without mutating global configuration', () => {
       const customMock = new MockLLMProvider();
       const { provider, providerName } = resolveDemoProvider('deterministic', customMock);
@@ -306,6 +423,126 @@ describe('E1: Real LLM Demonstration Scenario & Deterministic Safety', () => {
       expect(output).toContain('--- 4. DETERMINISTIC POLICY GATE (RCV-002 / Invariant I5) ---');
       expect(output).toContain('--- 5. OBSERVABILITY & ZERO-PII PROVENANCE ---');
       expect(output).toContain('Status: DEMO COMPLETED SUCCESSFULLY');
+    });
+
+    it('renders Gemini mode header cleanly when mode is gemini', () => {
+      const mockResult: RealLLMDemoResult = {
+        success: true,
+        mode: 'gemini',
+        provider: 'gemini (GeminiProvider via OrchestratedLLMProvider)',
+        models: {
+          diagnosis: 'gemini-3.6-flash',
+          decision: 'gemini-3.1-pro-preview'
+        },
+        scenario: {
+          merchantId: 1,
+          orderId: 100,
+          orderRef: '01TESTORDER000000000000001',
+          caseId: 200,
+          caseRef: '01TESTCASE0000000000000001',
+          stage: 'details_entered',
+          amountMinorUnits: 50000,
+          amountFormatted: '₹500.00',
+          currency: 'INR'
+        },
+        diagnosis: null,
+        decision: null,
+        policy: null,
+        observability: {
+          correlationId: '01DEMOCORR_GEMINI',
+          traceId: '01DEMOTRACE_GEMINI',
+          latencyMs: 400,
+          inputTokens: 300,
+          outputTokens: 80,
+          totalTokens: 380
+        },
+        explainabilityRef: '01TESTCASE0000000000000001',
+        zeroPiiVerified: true
+      };
+
+      const output = formatDemoOutput(mockResult);
+      expect(output).toContain('REAL GEMINI MODE');
+      expect(output).toContain('gemini (GeminiProvider via OrchestratedLLMProvider)');
+    });
+
+    it('renders OpenRouter mode header cleanly when mode is openrouter', () => {
+      const mockResult: RealLLMDemoResult = {
+        success: true,
+        mode: 'openrouter',
+        provider: 'openrouter (OpenRouterGeminiProvider via OrchestratedLLMProvider)',
+        models: {
+          diagnosis: 'google/gemini-3.6-flash',
+          decision: 'google/gemini-3.1-pro-preview'
+        },
+        scenario: {
+          merchantId: 1,
+          orderId: 100,
+          orderRef: '01TESTORDER000000000000001',
+          caseId: 200,
+          caseRef: '01TESTCASE0000000000000001',
+          stage: 'details_entered',
+          amountMinorUnits: 50000,
+          amountFormatted: '₹500.00',
+          currency: 'INR'
+        },
+        diagnosis: null,
+        decision: null,
+        policy: null,
+        observability: {
+          correlationId: '01DEMOCORR_OPENROUTER',
+          traceId: '01DEMOTRACE_OPENROUTER',
+          latencyMs: 350,
+          inputTokens: 250,
+          outputTokens: 70,
+          totalTokens: 320
+        },
+        explainabilityRef: '01TESTCASE0000000000000001',
+        zeroPiiVerified: true
+      };
+
+      const output = formatDemoOutput(mockResult);
+      expect(output).toContain('REAL OPENROUTER MODE');
+      expect(output).toContain('openrouter (OpenRouterGeminiProvider via OrchestratedLLMProvider)');
+    });
+
+    it('renders OmniRoute mode header cleanly when mode is omniroute', () => {
+      const mockResult: RealLLMDemoResult = {
+        success: true,
+        mode: 'omniroute',
+        provider: 'omniroute (OmniRouteProvider via OrchestratedLLMProvider)',
+        models: {
+          diagnosis: 'antigravity/gemini-3.6-flash-low',
+          decision: 'antigravity/gemini-3.1-pro-low'
+        },
+        scenario: {
+          merchantId: 1,
+          orderId: 100,
+          orderRef: '01TESTORDER000000000000001',
+          caseId: 200,
+          caseRef: '01TESTCASE0000000000000001',
+          stage: 'details_entered',
+          amountMinorUnits: 50000,
+          amountFormatted: '₹500.00',
+          currency: 'INR'
+        },
+        diagnosis: null,
+        decision: null,
+        policy: null,
+        observability: {
+          correlationId: '01DEMOCORR_OMNIROUTE',
+          traceId: '01DEMOTRACE_OMNIROUTE',
+          latencyMs: 350,
+          inputTokens: 250,
+          outputTokens: 70,
+          totalTokens: 320
+        },
+        explainabilityRef: '01TESTCASE0000000000000001',
+        zeroPiiVerified: true
+      };
+
+      const output = formatDemoOutput(mockResult);
+      expect(output).toContain('REAL OMNIROUTE MODE');
+      expect(output).toContain('omniroute (OmniRouteProvider via OrchestratedLLMProvider)');
     });
   });
 });

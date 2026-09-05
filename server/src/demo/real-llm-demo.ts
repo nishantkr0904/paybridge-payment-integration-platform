@@ -27,7 +27,7 @@ import { generateUlid } from '../utils/ulid.js';
 /*  Types & Interfaces (E1 Demonstration Harness)                     */
 /* ------------------------------------------------------------------ */
 
-export type DemoExecutionMode = 'deterministic' | 'openai';
+export type DemoExecutionMode = 'deterministic' | 'openai' | 'gemini' | 'openrouter' | 'omniroute';
 
 export interface RunDemoOptions {
   mode?: DemoExecutionMode;
@@ -157,12 +157,9 @@ export function resolveDemoProvider(
       );
     }
 
-    const config = {
-      ...baseConfig,
-      aiEnabled: true,
-      provider: 'openai' as const,
-      openaiApiKey: apiKey.trim()
-    };
+    const config = loadLLMConfig('openai');
+    config.aiEnabled = true;
+    config.openaiApiKey = apiKey.trim();
 
     const rawProvider = createRawLLMProvider(config);
     const orchestrated = new OrchestratedLLMProvider(rawProvider, config);
@@ -171,6 +168,84 @@ export function resolveDemoProvider(
     return {
       provider: wrapper,
       providerName: 'openai (OpenAIProvider via OrchestratedLLMProvider)',
+      models: {
+        diagnosis: config.taskModelMapping.diagnosis,
+        decision: config.taskModelMapping.decision
+      }
+    };
+  }
+
+  if (mode === 'gemini') {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey || apiKey.trim() === '') {
+      throw new LLMConfigurationError(
+        'GEMINI_API_KEY is required for real Gemini demonstration mode.'
+      );
+    }
+
+    const config = loadLLMConfig('gemini');
+    config.aiEnabled = true;
+    config.geminiApiKey = apiKey.trim();
+
+    const rawProvider = createRawLLMProvider(config);
+    const orchestrated = new OrchestratedLLMProvider(rawProvider, config);
+    const wrapper = new ObservingLLMProviderWrapper(orchestrated);
+
+    return {
+      provider: wrapper,
+      providerName: 'gemini (GeminiProvider via OrchestratedLLMProvider)',
+      models: {
+        diagnosis: config.taskModelMapping.diagnosis,
+        decision: config.taskModelMapping.decision
+      }
+    };
+  }
+
+  if (mode === 'openrouter') {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey || apiKey.trim() === '') {
+      throw new LLMConfigurationError(
+        'OPENROUTER_API_KEY is required for real OpenRouter demonstration mode.'
+      );
+    }
+
+    const config = loadLLMConfig('openrouter');
+    config.aiEnabled = true;
+    config.openrouterApiKey = apiKey.trim();
+
+    const rawProvider = createRawLLMProvider(config);
+    const orchestrated = new OrchestratedLLMProvider(rawProvider, config);
+    const wrapper = new ObservingLLMProviderWrapper(orchestrated);
+
+    return {
+      provider: wrapper,
+      providerName: 'openrouter (OpenRouterGeminiProvider via OrchestratedLLMProvider)',
+      models: {
+        diagnosis: config.taskModelMapping.diagnosis,
+        decision: config.taskModelMapping.decision
+      }
+    };
+  }
+
+  if (mode === 'omniroute') {
+    const apiKey = process.env.OMNIROUTE_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+    if (!apiKey || apiKey.trim() === '') {
+      throw new LLMConfigurationError(
+        'OMNIROUTE_API_KEY (or ANTHROPIC_AUTH_TOKEN) is required for real OmniRoute demonstration mode.'
+      );
+    }
+
+    const config = loadLLMConfig('omniroute');
+    config.aiEnabled = true;
+    config.omnirouteApiKey = apiKey.trim();
+
+    const rawProvider = createRawLLMProvider(config);
+    const orchestrated = new OrchestratedLLMProvider(rawProvider, config);
+    const wrapper = new ObservingLLMProviderWrapper(orchestrated);
+
+    return {
+      provider: wrapper,
+      providerName: 'omniroute (OmniRouteProvider via OrchestratedLLMProvider)',
       models: {
         diagnosis: config.taskModelMapping.diagnosis,
         decision: config.taskModelMapping.decision
@@ -465,7 +540,7 @@ export function formatDemoOutput(result: RealLLMDemoResult): string {
   lines.push(sep);
   lines.push('           PAYBRIDGE AUTONOMOUS RECOVERY — REAL LLM DEMONSTRATION');
   lines.push(sep);
-  lines.push(`Mode:                 ${result.mode === 'openai' ? 'REAL OPENAI MODE' : 'DETERMINISTIC MODE (Mock Provider)'}`);
+  lines.push(`Mode:                 ${result.mode === 'openai' ? 'REAL OPENAI MODE' : result.mode === 'gemini' ? 'REAL GEMINI MODE' : result.mode === 'openrouter' ? 'REAL OPENROUTER MODE' : result.mode === 'omniroute' ? 'REAL OMNIROUTE MODE' : 'DETERMINISTIC MODE (Mock Provider)'}`);
   lines.push(`Provider:             ${result.provider}`);
   lines.push(`Models:               Diagnosis: ${result.models.diagnosis} | Decision: ${result.models.decision}`);
   lines.push(`Correlation ID:       ${result.observability.correlationId}`);

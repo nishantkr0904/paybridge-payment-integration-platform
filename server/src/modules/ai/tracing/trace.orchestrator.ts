@@ -1,4 +1,4 @@
-import type { LLMProvider } from '../../../infrastructure/llm/llm.types.js';
+import { formatBoundedFallbackReason, type LLMProvider } from '../../../infrastructure/llm/llm.types.js';
 import { generateUlid } from '../../../utils/ulid.js';
 import type { PlanDecisionInput, DecisionPlan } from '../decision/decision.types.js';
 import { planRecoveryDecision } from '../decision/decision.agent.js';
@@ -86,7 +86,7 @@ export async function executeDiagnosisWithTrace(
       agentType: 'diagnosis',
       status: 'failed',
       correlationId,
-      terminationReason: errorMsg
+      terminationReason: formatBoundedFallbackReason(err)
     });
 
     throw Object.assign(err instanceof Error ? err : new Error(errorMsg), { trace });
@@ -160,7 +160,7 @@ export async function executeDecisionWithTrace(
       agentType: 'decision',
       status: 'failed',
       correlationId,
-      terminationReason: errorMsg
+      terminationReason: formatBoundedFallbackReason(err)
     });
 
     throw Object.assign(err instanceof Error ? err : new Error(errorMsg), { trace });

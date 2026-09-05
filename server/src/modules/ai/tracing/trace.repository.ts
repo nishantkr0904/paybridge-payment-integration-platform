@@ -99,6 +99,25 @@ function toTraceStep(row: AgentTraceStepRow): AgentTraceStep {
 /* ------------------------------------------------------------------ */
 
 /**
+ * Sanitizes and bounds termination_reason to fit within the database VARCHAR(255) column
+ * while ensuring sensitive secrets (API keys) are redacted.
+ */
+export function sanitizeTerminationReason(reason?: string | null): string | null {
+  if (!reason || typeof reason !== 'string') return null;
+  const trimmed = reason.trim();
+  if (trimmed === '') return null;
+
+  let sanitized = trimmed
+    .replace(/AIza[a-zA-Z0-9_-]{20,}/g, '[REDACTED_API_KEY]')
+    .replace(/sk-[a-zA-Z0-9_-]{20,}/g, '[REDACTED_API_KEY]');
+
+  if (sanitized.length > 255) {
+    sanitized = sanitized.slice(0, 252) + '...';
+  }
+  return sanitized;
+}
+
+/**
  * Creates an agent reasoning trace along with all its step records atomically.
  * (AI-007 / AUD-002)
  */
@@ -109,6 +128,7 @@ export async function createAgentTrace(input: CreateTraceInput): Promise<AgentTr
     await conn.beginTransaction();
 
     const traceRef = input.traceRef || generateUlid();
+    const sanitizedReason = sanitizeTerminationReason(input.terminationReason);
 
     const [headerResult] = await conn.query<ResultSetHeader>(
       `INSERT INTO agent_traces (
@@ -122,7 +142,7 @@ export async function createAgentTrace(input: CreateTraceInput): Promise<AgentTr
         traceRef,
         input.agentType,
         input.status,
-        input.terminationReason || null,
+        sanitizedReason,
         input.totalDurationMs || 0,
         input.totalInputTokens || 0,
         input.totalOutputTokens || 0,
@@ -184,7 +204,7 @@ export async function createAgentTrace(input: CreateTraceInput): Promise<AgentTr
       traceRef,
       agentType: input.agentType,
       status: input.status,
-      terminationReason: input.terminationReason || null,
+      terminationReason: sanitizedReason,
       totalDurationMs: input.totalDurationMs || 0,
       totalInputTokens: input.totalInputTokens || 0,
       totalOutputTokens: input.totalOutputTokens || 0,

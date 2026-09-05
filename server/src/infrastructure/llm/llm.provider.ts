@@ -13,6 +13,9 @@ import {
 } from './llm.types.js';
 import { MockLLMProvider } from './mock-provider.js';
 import { OpenAIProvider } from './openai-provider.js';
+import { GeminiProvider } from './gemini-provider.js';
+import { OpenRouterGeminiProvider } from './openrouter-gemini-provider.js';
+import { OmniRouteProvider } from './omniroute-provider.js';
 import { executeWithRetry } from './retry.js';
 
 /* ------------------------------------------------------------------ */
@@ -28,12 +31,18 @@ export interface LLMConfig {
   circuitBreakerResetMs: number;
   openaiApiKey?: string;
   anthropicApiKey?: string;
+  geminiApiKey?: string;
+  geminiBaseURL?: string;
+  openrouterApiKey?: string;
+  openrouterBaseURL?: string;
+  omnirouteApiKey?: string;
+  omnirouteBaseURL?: string;
   taskModelMapping: Record<LLMTask, string>;
 }
 
-export function loadLLMConfig(): LLMConfig {
+export function loadLLMConfig(overrideProvider?: LLMProviderType): LLMConfig {
   const aiEnabled = process.env.AI_ENABLED === 'true';
-  const provider = (process.env.LLM_PROVIDER as LLMProviderType) || 'mock';
+  const provider = overrideProvider || (process.env.LLM_PROVIDER as LLMProviderType) || 'mock';
   const defaultTimeoutMs = Number(process.env.LLM_TIMEOUT_MS) || 20000;
   const maxConcurrency = Number(process.env.LLM_MAX_CONCURRENCY) || 10;
   const circuitBreakerThreshold = Number(process.env.LLM_CIRCUIT_BREAKER_THRESHOLD) || 5;
@@ -41,11 +50,39 @@ export function loadLLMConfig(): LLMConfig {
 
   const openaiApiKey = process.env.OPENAI_API_KEY;
   const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
+  const geminiApiKey = process.env.GEMINI_API_KEY;
+  const geminiBaseURL = process.env.GEMINI_BASE_URL;
+  const openrouterApiKey = process.env.OPENROUTER_API_KEY;
+  const openrouterBaseURL = process.env.OPENROUTER_BASE_URL;
+  const omnirouteApiKey = process.env.OMNIROUTE_API_KEY || process.env.ANTHROPIC_AUTH_TOKEN;
+  const omnirouteBaseURL = process.env.OMNIROUTE_BASE_URL;
+
+  const isGemini = provider === 'gemini';
+  const isOpenRouter = provider === 'openrouter';
+  const isOmniRoute = provider === 'omniroute';
 
   const taskModelMapping: Record<LLMTask, string> = {
-    diagnosis: process.env.LLM_MODEL_DIAGNOSIS || 'gpt-4o-mini',
-    decision: process.env.LLM_MODEL_DECISION || 'gpt-4o',
-    summarisation: process.env.LLM_MODEL_SUMMARISATION || 'gpt-4o-mini'
+    diagnosis: isOmniRoute
+      ? (process.env.OMNIROUTE_DIAGNOSIS_MODEL || process.env.OMNIROUTE_MODEL_DIAGNOSIS || process.env.LLM_MODEL_DIAGNOSIS || 'antigravity/gemini-3.6-flash-low')
+      : isOpenRouter
+        ? (process.env.OPENROUTER_DIAGNOSIS_MODEL || process.env.OPENROUTER_MODEL_DIAGNOSIS || process.env.LLM_MODEL_DIAGNOSIS || 'google/gemini-3.6-flash')
+        : isGemini
+          ? (process.env.GEMINI_DIAGNOSIS_MODEL || process.env.GEMINI_MODEL_DIAGNOSIS || process.env.LLM_MODEL_DIAGNOSIS || 'gemini-3.6-flash')
+          : (process.env.LLM_MODEL_DIAGNOSIS || 'gpt-4o-mini'),
+    decision: isOmniRoute
+      ? (process.env.OMNIROUTE_DECISION_MODEL || process.env.OMNIROUTE_MODEL_DECISION || process.env.LLM_MODEL_DECISION || 'antigravity/gemini-3.1-pro-low')
+      : isOpenRouter
+        ? (process.env.OPENROUTER_DECISION_MODEL || process.env.OPENROUTER_MODEL_DECISION || process.env.LLM_MODEL_DECISION || 'google/gemini-3.1-pro-preview')
+        : isGemini
+          ? (process.env.GEMINI_DECISION_MODEL || process.env.GEMINI_MODEL_DECISION || process.env.LLM_MODEL_DECISION || 'gemini-3.1-pro-preview')
+          : (process.env.LLM_MODEL_DECISION || 'gpt-4o'),
+    summarisation: isOmniRoute
+      ? (process.env.OMNIROUTE_SUMMARISATION_MODEL || process.env.OMNIROUTE_MODEL_SUMMARISATION || process.env.LLM_MODEL_SUMMARISATION || 'antigravity/gemini-3.6-flash-low')
+      : isOpenRouter
+        ? (process.env.OPENROUTER_SUMMARISATION_MODEL || process.env.OPENROUTER_MODEL_SUMMARISATION || process.env.LLM_MODEL_SUMMARISATION || 'google/gemini-3.6-flash')
+        : isGemini
+          ? (process.env.GEMINI_SUMMARISATION_MODEL || process.env.GEMINI_MODEL_SUMMARISATION || process.env.LLM_MODEL_SUMMARISATION || 'gemini-3.6-flash')
+          : (process.env.LLM_MODEL_SUMMARISATION || 'gpt-4o-mini')
   };
 
   return {
@@ -57,6 +94,12 @@ export function loadLLMConfig(): LLMConfig {
     circuitBreakerResetMs,
     openaiApiKey,
     anthropicApiKey,
+    geminiApiKey,
+    geminiBaseURL,
+    openrouterApiKey,
+    openrouterBaseURL,
+    omnirouteApiKey,
+    omnirouteBaseURL,
     taskModelMapping
   };
 }
@@ -71,6 +114,21 @@ export function validateLLMConfig(config = loadLLMConfig()): void {
     if (config.provider === 'openai' && !config.openaiApiKey) {
       throw new LLMConfigurationError(
         'AI is enabled with LLM_PROVIDER=openai, but OPENAI_API_KEY is missing from environment.'
+      );
+    }
+    if (config.provider === 'gemini' && !config.geminiApiKey) {
+      throw new LLMConfigurationError(
+        'AI is enabled with LLM_PROVIDER=gemini, but GEMINI_API_KEY is missing from environment.'
+      );
+    }
+    if (config.provider === 'openrouter' && !config.openrouterApiKey) {
+      throw new LLMConfigurationError(
+        'AI is enabled with LLM_PROVIDER=openrouter, but OPENROUTER_API_KEY is missing from environment.'
+      );
+    }
+    if (config.provider === 'omniroute' && !config.omnirouteApiKey) {
+      throw new LLMConfigurationError(
+        'AI is enabled with LLM_PROVIDER=omniroute, but OMNIROUTE_API_KEY is missing from environment.'
       );
     }
     if (config.provider === 'anthropic' && !config.anthropicApiKey) {
@@ -102,13 +160,46 @@ export function createRawLLMProvider(config = loadLLMConfig()): LLMProvider {
         apiKey: config.openaiApiKey,
         taskModelMapping: config.taskModelMapping
       });
+    case 'gemini':
+      if (!config.geminiApiKey || config.geminiApiKey.trim() === '') {
+        throw new LLMConfigurationError(
+          'GEMINI_API_KEY is required to initialize GeminiProvider.'
+        );
+      }
+      return new GeminiProvider({
+        apiKey: config.geminiApiKey,
+        baseURL: config.geminiBaseURL,
+        taskModelMapping: config.taskModelMapping
+      });
+    case 'openrouter':
+      if (!config.openrouterApiKey || config.openrouterApiKey.trim() === '') {
+        throw new LLMConfigurationError(
+          'OPENROUTER_API_KEY is required to initialize OpenRouterGeminiProvider.'
+        );
+      }
+      return new OpenRouterGeminiProvider({
+        apiKey: config.openrouterApiKey,
+        baseURL: config.openrouterBaseURL,
+        taskModelMapping: config.taskModelMapping
+      });
+    case 'omniroute':
+      if (!config.omnirouteApiKey || config.omnirouteApiKey.trim() === '') {
+        throw new LLMConfigurationError(
+          'OMNIROUTE_API_KEY is required to initialize OmniRouteProvider.'
+        );
+      }
+      return new OmniRouteProvider({
+        apiKey: config.omnirouteApiKey,
+        baseURL: config.omnirouteBaseURL,
+        taskModelMapping: config.taskModelMapping
+      });
     case 'anthropic':
       throw new LLMConfigurationError(
-        'Anthropic provider is not implemented yet. Use LLM_PROVIDER=mock or LLM_PROVIDER=openai.'
+        'Anthropic provider is not implemented yet. Use LLM_PROVIDER=mock, LLM_PROVIDER=openai, LLM_PROVIDER=gemini, LLM_PROVIDER=openrouter, or LLM_PROVIDER=omniroute.'
       );
     default:
       throw new LLMConfigurationError(
-        `Unsupported LLM provider: '${config.provider}'. Supported providers are: 'mock', 'openai'.`
+        `Unsupported LLM provider: '${config.provider}'. Supported providers are: 'mock', 'openai', 'gemini', 'openrouter', 'omniroute'.`
       );
   }
 }

@@ -4,7 +4,7 @@
 
 export type LLMTask = 'diagnosis' | 'decision' | 'summarisation';
 
-export type LLMProviderType = 'mock' | 'openai' | 'anthropic';
+export type LLMProviderType = 'mock' | 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'omniroute';
 
 export interface LLMRequest {
   task: LLMTask;
@@ -99,4 +99,25 @@ export class LLMConfigurationError extends LLMError {
     super(message, 'LLM_CONFIG_ERROR', false);
     this.name = 'LLMConfigurationError';
   }
+}
+
+/**
+ * Formats a clean, bounded fallback reason from an error or exception.
+ * Enforces a maximum length of 200 characters and prepends the stable error code
+ * if the error is an instance of LLMError, ensuring safe persistence into bounded fields.
+ */
+export function formatBoundedFallbackReason(err: unknown, maxLength = 200): string {
+  if (!err) return 'UNKNOWN_ERROR';
+  if (err instanceof LLMError) {
+    const code = err.code || 'LLM_ERROR';
+    const cleanMsg = err.message.replace(/\s+/g, ' ').trim();
+    const candidate = cleanMsg.startsWith(code) ? cleanMsg : `${code}: ${cleanMsg}`;
+    return candidate.length > maxLength ? candidate.slice(0, maxLength - 3) + '...' : candidate;
+  }
+  if (err instanceof Error) {
+    const cleanMsg = err.message.replace(/\s+/g, ' ').trim();
+    return cleanMsg.length > maxLength ? cleanMsg.slice(0, maxLength - 3) + '...' : cleanMsg;
+  }
+  const str = String(err).replace(/\s+/g, ' ').trim();
+  return str.length > maxLength ? str.slice(0, maxLength - 3) + '...' : str;
 }

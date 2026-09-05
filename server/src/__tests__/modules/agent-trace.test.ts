@@ -14,6 +14,7 @@ import {
   buildRecoveryContext
 } from '../../modules/ai/index.js';
 import { MockLLMProvider } from '../../infrastructure/llm/mock-provider.js';
+import { LLMError } from '../../infrastructure/llm/llm.types.js';
 import { ingestPaymentFailure } from '../../modules/recovery/case.service.js';
 import type { PaymentFailedEvent } from '../../modules/recovery/case.types.js';
 
@@ -264,6 +265,34 @@ describe('TASK-305: Agent Reasoning Trace & Audit Capture (AI-007 / AUD-002 / OB
       expect(trace.id).toBeDefined();
       expect(trace.steps[0]?.validationStatus).toBe('fallback');
       expect(trace.terminationReason).toContain('Provider 500 Internal Error');
+    });
+
+    it('handles provider error with payload exceeding VARCHAR(255) without database column overflow (E1 fix)', async () => {
+      const longErrorMessage =
+        'Gemini API error (404): 404 models/gemini-1.5-flash is not found for API version v1beta, or is not supported for generateContent. Call ListModels to see the list of available models and their supported methods. ' +
+        'Detailed diagnostic JSON payload: ' + JSON.stringify({ error: { details: 'X'.repeat(600) } });
+
+      const failingMock = new MockLLMProvider({
+        failureInjector: () => {
+          throw new LLMError(longErrorMessage, 'GEMINI_API_ERROR', false, 404);
+        }
+      });
+      const context = await buildRecoveryContext({ caseId, merchantId });
+
+      const { diagnosis, trace } = await executeDiagnosisWithTrace(
+        { context, correlationId: '01LONGOVERFLOWTRACE001' },
+        failingMock,
+        merchantId,
+        caseId
+      );
+
+      expect(diagnosis.provenance.source).toBe('rules');
+      expect(trace.id).toBeDefined();
+      expect(trace.status).toBe('success');
+      expect(trace.steps[0]?.validationStatus).toBe('fallback');
+      expect(trace.terminationReason).toBeDefined();
+      expect(trace.terminationReason!.length).toBeLessThanOrEqual(255);
+      expect(trace.terminationReason).toContain('GEMINI_API_ERROR');
     });
   });
 
