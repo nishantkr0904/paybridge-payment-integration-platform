@@ -138,6 +138,22 @@ export function deriveRulesDiagnosis(
       explanation: 'Cardholder institution is undergoing system maintenance or outage. Delayed retry recommended once issuer recovers.',
       evidence: ['case.failureCategory']
     };
+  } else if (
+    signalCategory === 'CUSTOMER_ABANDONED' ||
+    (context.case.originatingSignal && context.case.originatingSignal.toLowerCase().includes('abandon')) ||
+    failureReason.includes('abandon')
+  ) {
+    rule = {
+      category: 'CUSTOMER_ABANDONED',
+      reasonCode: 'CHECKOUT_INACTIVITY_ABANDONED',
+      rootCause: 'Customer abandoned checkout session prior to payment authorization',
+      contributingFactors: ['Customer hesitation or validation friction', 'Checkout inactivity timeout'],
+      recoverable: true,
+      recommendedStrategy: 'CUSTOMER_OUTREACH',
+      confidence: 0.65,
+      explanation: 'Customer initiated checkout session but abandoned before completing payment. Targeted customer outreach recommended.',
+      evidence: ['case.originatingSignal', 'case.failureCategory']
+    };
   } else {
     rule = {
       category: 'UNKNOWN',
