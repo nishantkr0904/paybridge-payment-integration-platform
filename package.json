@@ -13,7 +13,8 @@
     "db:migrate": "npm run db:migrate --workspace server",
     "db:rollback": "npm run db:rollback --workspace server --",
     "db:status": "npm run db:status --workspace server",
-    "db:baseline": "npm run db:baseline --workspace server"
+    "db:baseline": "npm run db:baseline --workspace server",
+    "demo:llm": "npm run demo:llm --workspace server --"
   },
   "workspaces": [
     "client",
