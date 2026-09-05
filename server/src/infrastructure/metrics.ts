@@ -96,6 +96,41 @@ export const recoveryRevenueRecoveredMinorUnitsTotal = new client.Counter({
 });
 
 /* ------------------------------------------------------------------ */
+/*  Checkout Abandonment Prometheus Metrics (SIG-002 / BT-D2)         */
+/* ------------------------------------------------------------------ */
+
+export const checkoutAbandonmentsDetectedTotal = new client.Counter({
+  name: 'checkout_abandonments_detected_total',
+  help: 'Total number of checkout abandonment events detected by stage and source',
+  labelNames: ['stage', 'source'] as const,
+  registers: [metricsRegistry]
+});
+
+export const checkoutAbandonmentDwellTimeSeconds = new client.Histogram({
+  name: 'checkout_abandonment_dwell_time_seconds',
+  help: 'Dwell time in seconds of abandoned checkout sessions by stage',
+  labelNames: ['stage'] as const,
+  buckets: [10, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200],
+  registers: [metricsRegistry]
+});
+
+export function recordCheckoutAbandonmentMetric(params: {
+  stage: string;
+  source?: string;
+  dwellTimeSeconds?: number;
+}): void {
+  try {
+    const stage = params.stage || 'arrived_only';
+    const source = params.source || 'merchant_api';
+    checkoutAbandonmentsDetectedTotal.inc({ stage, source });
+    const dwell = Math.max(0, Number(params.dwellTimeSeconds) || 0);
+    checkoutAbandonmentDwellTimeSeconds.observe({ stage }, dwell);
+  } catch {
+    // Non-blocking fail-safe
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Running Counters & Authoritative Synchronizers                    */
 /* ------------------------------------------------------------------ */
 

@@ -1,6 +1,7 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { pool } from '../../config/database.js';
 import type { CheckoutAbandonedEvent, OrderAbandonmentRecord } from './abandonment.types.js';
+import type { Order, OrderStatus } from './payment.types.js';
 
 /* ------------------------------------------------------------------ */
 /*  Order Abandonment Persistence (Tenant-Scoped / Invariant I9)     */
@@ -132,4 +133,63 @@ export async function getOrderAbandonmentHistory(
   return Array.isArray(metadata.abandonmentHistory)
     ? (metadata.abandonmentHistory as CheckoutAbandonedEvent[])
     : [];
+}
+
+/* ------------------------------------------------------------------ */
+/*  Timeout Detection Order Query (SIG-002 / BT-D2)                  */
+/* ------------------------------------------------------------------ */
+
+export interface FindPendingOrdersOptions {
+  merchantId?: number;
+  limit?: number;
+}
+
+/**
+ * Finds pending checkout orders eligible for timeout detection.
+ * Enforces status = 'pending' and optional tenant filtering (SEC-002, Invariant I9).
+ */
+export async function findPendingOrdersForTimeoutDetection(
+  options: FindPendingOrdersOptions = {}
+): Promise<Order[]> {
+  const limit = Math.max(1, Math.min(Number(options.limit) || 100, 1000));
+
+  const [rows] =
+    options.merchantId !== undefined
+      ? await pool.query<RowDataPacket[]>(
+          `SELECT * FROM orders WHERE status = 'pending' AND merchant_id = ? ORDER BY id ASC LIMIT ?`,
+          [options.merchantId, limit]
+        )
+      : await pool.query<RowDataPacket[]>(
+          `SELECT * FROM orders WHERE status = 'pending' ORDER BY id ASC LIMIT ?`,
+          [limit]
+        );
+
+  return rows.map((row) => {
+    let metadata: Record<string, unknown> | null = null;
+    if (row.metadata) {
+      if (typeof row.metadata === 'string') {
+        try {
+          metadata = JSON.parse(row.metadata);
+        } catch {
+          metadata = null;
+        }
+      } else if (typeof row.metadata === 'object') {
+        metadata = row.metadata as Record<string, unknown>;
+      }
+    }
+
+    return {
+      id: row.id,
+      merchantId: row.merchant_id,
+      orderRef: row.order_ref,
+      amount: Number(row.amount),
+      currency: row.currency,
+      description: row.description ?? null,
+      status: row.status as OrderStatus,
+      customerEmail: row.customer_email ?? null,
+      metadata,
+      createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+      updatedAt: row.updated_at instanceof Date ? row.updated_at : new Date(row.updated_at)
+    };
+  });
 }

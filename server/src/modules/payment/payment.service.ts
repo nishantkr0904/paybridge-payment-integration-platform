@@ -202,3 +202,7 @@ export async function getMerchantOrderSummary(merchantId: number) {
 }
 
 export { ingestCheckoutAbandonment } from './abandonment.service.js';
+export {
+  detectCheckoutAbandonmentTimeouts,
+  checkOrderTimeout
+} from './timeout-detector.service.js';

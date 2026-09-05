@@ -590,6 +590,108 @@ components:
         timestamp:
           type: string
           format: date-time
+    TimeoutDetectionInput:
+      type: object
+      properties:
+        timeoutThresholdSeconds:
+          type: integer
+          description: Inactivity threshold in seconds (defaults to env CHECKOUT_ABANDONMENT_TIMEOUT_SECONDS)
+        limit:
+          type: integer
+          description: Maximum pending orders to scan in batch (default 100, max 1000)
+        orderRef:
+          type: string
+          description: Optional specific order reference to evaluate instead of scanning all pending orders
+    TimeoutDetectionResultItem:
+      type: object
+      required:
+        - orderRef
+        - merchantId
+        - abandoned
+        - isDuplicate
+        - dwellTimeSeconds
+        - stage
+      properties:
+        orderRef:
+          type: string
+        merchantId:
+          type: integer
+        abandoned:
+          type: boolean
+        isDuplicate:
+          type: boolean
+        dwellTimeSeconds:
+          type: number
+        stage:
+          $ref: '#/components/schemas/CheckoutAbandonmentStage'
+        eventId:
+          type: string
+        reason:
+          type: string
+    TimeoutDetectionReport:
+      type: object
+      required:
+        - scannedCount
+        - detectedCount
+        - skippedCount
+        - duplicateCount
+        - abandonedOrderRefs
+        - results
+        - scannedAt
+        - thresholdSeconds
+      properties:
+        scannedCount:
+          type: integer
+        detectedCount:
+          type: integer
+        skippedCount:
+          type: integer
+        duplicateCount:
+          type: integer
+        abandonedOrderRefs:
+          type: array
+          items:
+            type: string
+        results:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeoutDetectionResultItem'
+        scannedAt:
+          type: string
+          format: date-time
+        thresholdSeconds:
+          type: integer
+    SingleTimeoutCheckResult:
+      type: object
+      required:
+        - orderRef
+        - merchantId
+        - status
+        - isAbandoned
+        - isDuplicate
+        - dwellTimeSeconds
+        - thresholdSeconds
+      properties:
+        orderRef:
+          type: string
+        merchantId:
+          type: integer
+        status:
+          type: string
+        isAbandoned:
+          type: boolean
+        isDuplicate:
+          type: boolean
+        dwellTimeSeconds:
+          type: number
+        thresholdSeconds:
+          type: integer
+        stage:
+          $ref: '#/components/schemas/CheckoutAbandonmentStage'
+        eventId:
+          type: string
+        reason:
+          type: string
 security:
   - bearerAuth: []
 paths:
@@ -712,6 +814,59 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/AbandonmentIngestionResult'
+  /payments/checkout/timeout-detection:
+    post:
+      summary: Batch scan or check checkout abandonment timeouts for merchant's pending orders (BT-D2)
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TimeoutDetectionInput'
+      responses:
+        '200':
+          description: Timeout detection report or single check result
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/TimeoutDetectionReport'
+                  - $ref: '#/components/schemas/SingleTimeoutCheckResult'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Order not found if specific orderRef requested
+        '409':
+          description: Order in terminal state if specific orderRef requested
+  /payments/orders/{orderRef}/timeout-detection:
+    post:
+      summary: Evaluate checkout abandonment timeout for a specific order (BT-D2)
+      parameters:
+        - in: path
+          name: orderRef
+          required: true
+          schema:
+            type: string
+          description: Unique ULID reference of the order
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TimeoutDetectionInput'
+      responses:
+        '200':
+          description: Timeout evaluation result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SingleTimeoutCheckResult'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Order not found or cross-tenant access prohibited
+        '409':
+          description: Order is already paid or failed
   /merchants/policies:
     get:
       summary: List all policies for the authenticated merchant
