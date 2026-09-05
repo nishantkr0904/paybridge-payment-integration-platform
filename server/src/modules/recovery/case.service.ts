@@ -311,3 +311,11 @@ export async function getQueueMetrics(merchantId?: number): Promise<QueueMetrics
 }
 
 export { getCaseExplainability } from './explainability.service.js';
+export {
+  ingestAbandonmentRecovery,
+  advanceCaseThroughRecoveryPipeline,
+  type AbandonmentRecoveryOptions,
+  type AbandonmentRecoveryResult,
+  type PipelineAdvanceOptions,
+  type PipelineAdvanceResult
+} from './abandonment-recovery.service.js';

@@ -132,6 +132,17 @@ export async function findCaseByTransactionId(
   return rows[0] ? toCase(rows[0]) : null;
 }
 
+export async function findCaseByOrderId(
+  orderId: number,
+  merchantId: number
+): Promise<RecoveryCase | null> {
+  const [rows] = await pool.query<CaseRow[]>(
+    `SELECT * FROM cases WHERE order_id = :orderId AND merchant_id = :merchantId ORDER BY id DESC LIMIT 1`,
+    { orderId, merchantId }
+  );
+  return rows[0] ? toCase(rows[0]) : null;
+}
+
 export async function findCasesByMerchantId(merchantId: number): Promise<RecoveryCase[]> {
   const [rows] = await pool.query<CaseRow[]>(
     `SELECT * FROM cases WHERE merchant_id = :merchantId ORDER BY id DESC`,
@@ -206,6 +217,50 @@ export async function findCaseEventsByCaseId(
   return rows.map(toCaseEvent);
 }
 
+/**
+ * Appends a new event to a case's chronological event store without changing case status.
+ */
+export async function addCaseEvent(
+  caseId: number,
+  merchantId: number,
+  event: CreateCaseEventInput
+): Promise<CaseEvent> {
+  const conn = await pool.getConnection();
+  try {
+    const payloadJson = event.payload ? JSON.stringify(event.payload) : null;
+    const [result] = await conn.query<ResultSetHeader>(
+      `INSERT INTO case_events (
+        case_id, merchant_id, from_status, to_status,
+        actor_type, actor_id, reason, payload, correlation_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        caseId,
+        merchantId,
+        event.fromStatus ?? null,
+        event.toStatus,
+        event.actorType,
+        event.actorId ?? null,
+        event.reason ?? null,
+        payloadJson,
+        event.correlationId
+      ]
+    );
+
+    const [rows] = await conn.query<CaseEventRow[]>(
+      `SELECT * FROM case_events WHERE id = ? AND merchant_id = ?`,
+      [result.insertId, merchantId]
+    );
+
+    if (!rows[0]) {
+      throw new Error(`Failed to retrieve newly appended event for case ${caseId}`);
+    }
+
+    return toCaseEvent(rows[0]);
+  } finally {
+    conn.release();
+  }
+}
+
 export async function getShedEventCount(merchantId?: number): Promise<number> {
   if (merchantId) {
     const [rows] = await pool.query<RowDataPacket[]>(
@@ -242,6 +297,15 @@ export async function createCaseWithEvent(
       const [existingRows] = await conn.query<CaseRow[]>(
         `SELECT * FROM cases WHERE transaction_id = ? AND merchant_id = ? FOR UPDATE`,
         [input.transactionId, merchantId]
+      );
+      if (existingRows.length > 0) {
+        await conn.commit();
+        return toCase(existingRows[0]!);
+      }
+    } else if (input.orderId) {
+      const [existingRows] = await conn.query<CaseRow[]>(
+        `SELECT * FROM cases WHERE order_id = ? AND merchant_id = ? FOR UPDATE`,
+        [input.orderId, merchantId]
       );
       if (existingRows.length > 0) {
         await conn.commit();

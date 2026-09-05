@@ -18,6 +18,7 @@ export const FailureCategorySchema = z.enum([
   'VELOCITY_LIMIT',
   'CURRENCY_MISMATCH',
   'INVALID_ACCOUNT',
+  'CUSTOMER_ABANDONED',
   'UNKNOWN'
 ]);
 

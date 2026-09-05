@@ -131,6 +131,29 @@ export function recordCheckoutAbandonmentMetric(params: {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Checkout Abandonment Recovery Pipeline Metrics (BT-D3)            */
+/* ------------------------------------------------------------------ */
+
+export const checkoutAbandonmentRecoveriesTotal = new client.Counter({
+  name: 'checkout_abandonment_recoveries_total',
+  help: 'Total number of checkout abandonment events processed by the recovery pipeline',
+  labelNames: ['stage', 'status'] as const,
+  registers: [metricsRegistry]
+});
+
+export function recordAbandonmentRecoveryMetric(params: {
+  stage: string;
+  status: 'created' | 'linked' | 'duplicate_suppressed' | 'terminal_skipped' | 'failed';
+}): void {
+  try {
+    const stage = params.stage || 'unknown';
+    checkoutAbandonmentRecoveriesTotal.inc({ stage, status: params.status });
+  } catch {
+    // Non-blocking fail-safe
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /*  Running Counters & Authoritative Synchronizers                    */
 /* ------------------------------------------------------------------ */
 

@@ -124,6 +124,10 @@ export class MockLLMProvider implements LLMProvider {
                 recoverable = true;
                 recommendedStrategy = 'IMMEDIATE_RETRY';
                 rootCause = 'Transient network or gateway timeout';
+              } else if (cat === 'CUSTOMER_ABANDONED') {
+                recoverable = true;
+                recommendedStrategy = 'CUSTOMER_OUTREACH';
+                rootCause = 'Customer abandoned active checkout session';
               } else if (cat === 'ISSUER_DOWN' || cat === 'ISSUER_SOFT_DECLINE' || cat === 'VELOCITY_LIMIT') {
                 recoverable = true;
                 recommendedStrategy = 'DELAYED_RETRY';
@@ -150,27 +154,38 @@ export class MockLLMProvider implements LLMProvider {
         break;
       }
 
-      case 'decision':
+      case 'decision': {
         modelId = 'mock-decision-v1';
+        const isAbandonment =
+          request.prompt.includes('CUSTOMER_ABANDONED') ||
+          request.prompt.includes('checkout.abandoned');
+
+        const primaryActionType = isAbandonment ? 'CUSTOMER_OUTREACH' : 'RETRY_PAYMENT';
+        const toolName = isAbandonment ? 'send_recovery_link' : 'schedule_payment_retry';
+        const rationale = isAbandonment
+          ? 'Send direct customer recovery outreach link after checkout abandonment'
+          : 'Schedule automated retry 24 hours later during banking operational window';
+
         defaultContent = JSON.stringify({
-          actionType: 'RETRY_PAYMENT',
-          scheduledDelaySeconds: 86400,
-          planRationale: 'Schedule automated retry 24 hours later during banking operational window',
+          actionType: primaryActionType,
+          scheduledDelaySeconds: isAbandonment ? 1800 : 86400,
+          planRationale: rationale,
           actions: [
             {
-              actionType: 'RETRY_PAYMENT',
-              toolName: 'schedule_payment_retry',
-              scheduledDelaySeconds: 86400,
+              actionType: primaryActionType,
+              toolName,
+              scheduledDelaySeconds: isAbandonment ? 1800 : 86400,
               costMinorUnits: 0,
               incentivePercent: 0,
-              rationale: 'Schedule automated retry 24 hours later during banking operational window',
-              parameters: {}
+              rationale,
+              parameters: isAbandonment ? { channel: 'email' } : {}
             }
           ],
           costOrderingRespect: true
         });
         defaultStructuredData = JSON.parse(defaultContent);
         break;
+      }
 
       case 'summarisation':
         modelId = 'mock-summarisation-v1';
