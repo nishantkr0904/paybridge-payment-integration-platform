@@ -8,7 +8,9 @@ import {
   createCheckoutOrder,
   getOrderStatus,
   listMerchantOrders,
-  processPayment
+  processPayment,
+  detectCheckoutAbandonmentTimeouts,
+  checkOrderTimeout
 } from './payment.service.js';
 import { CheckoutAbandonmentInputSchema } from './abandonment.types.js';
 import { ingestCheckoutAbandonment } from './abandonment.service.js';
@@ -125,3 +127,55 @@ const handleAbandonmentIngest = async (req: Request, res: Response, next: NextFu
 
 paymentRouter.post('/orders/:orderRef/abandonment', handleAbandonmentIngest);
 paymentRouter.post('/orders/:orderRef/abandoned', handleAbandonmentIngest);
+
+/* ------------------------------------------------------------------ */
+/*  Timeout Detection Routes (SIG-002 / BT-D2)                        */
+/* ------------------------------------------------------------------ */
+
+const timeoutDetectionSchema = z.object({
+  timeoutThresholdSeconds: z.number().int().positive().optional(),
+  limit: z.number().int().positive().max(1000).optional(),
+  orderRef: z.string().optional()
+});
+
+/* POST /api/payments/checkout/timeout-detection — batch scan or check timeout */
+paymentRouter.post('/checkout/timeout-detection', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const input = timeoutDetectionSchema.parse(req.body || {});
+    if (input.orderRef) {
+      const result = await checkOrderTimeout(input.orderRef, req.user!.id, {
+        timeoutThresholdSeconds: input.timeoutThresholdSeconds,
+        correlationId: req.correlationId
+      });
+      res.json(result);
+      return;
+    }
+
+    const report = await detectCheckoutAbandonmentTimeouts({
+      merchantId: req.user!.id,
+      timeoutThresholdSeconds: input.timeoutThresholdSeconds,
+      limit: input.limit,
+      correlationId: req.correlationId
+    });
+
+    res.json(report);
+  } catch (error) {
+    next(error);
+  }
+});
+
+/* POST /api/payments/orders/:orderRef/timeout-detection — single order timeout evaluation */
+paymentRouter.post('/orders/:orderRef/timeout-detection', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const input = timeoutDetectionSchema.parse(req.body || {});
+    const orderRef = Array.isArray(req.params.orderRef) ? req.params.orderRef[0]! : req.params.orderRef!;
+    const result = await checkOrderTimeout(orderRef, req.user!.id, {
+      timeoutThresholdSeconds: input.timeoutThresholdSeconds,
+      correlationId: req.correlationId
+    });
+
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});

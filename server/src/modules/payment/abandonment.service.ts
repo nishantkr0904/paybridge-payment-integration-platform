@@ -1,4 +1,5 @@
 import type amqp from 'amqplib';
+import { recordCheckoutAbandonmentMetric } from '../../infrastructure/metrics.js';
 import { publishCheckoutAbandoned, ROUTING_KEYS } from '../../infrastructure/rabbitmq.js';
 import { HttpError } from '../../utils/http-error.js';
 import { logger } from '../../utils/logger.js';
@@ -118,6 +119,13 @@ export async function ingestCheckoutAbandonment(
       );
       // Durably persisted in order metadata even if broker publish fails
     }
+
+    // 7. Record Prometheus metrics (SIG-002 / BT-D2)
+    recordCheckoutAbandonmentMetric({
+      stage: validatedEvent.stage,
+      source: validatedEvent.source,
+      dwellTimeSeconds: validatedEvent.dwellTimeSeconds
+    });
   } else {
     serviceLogger.info(
       { eventId, stage: validatedEvent.stage },
