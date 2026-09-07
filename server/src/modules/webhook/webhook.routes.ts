@@ -1,10 +1,72 @@
+import net from 'node:net';
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
+import { env } from '../../config/env.js';
+import {
+  isAllowedInternalTarget,
+  isPrivateOrReservedIp,
+  normalizeHostname
+} from '../../utils/ssrf.js';
 import { addWebhookEndpoint, listWebhookEndpoints, listWebhookDeliveries } from './webhook.service.js';
 
-const addEndpointSchema = z.object({
-  url: z.string().url()
+export const addEndpointSchema = z.object({
+  url: z
+    .string()
+    .url()
+    .superRefine((val, ctx) => {
+      try {
+        const parsed = new URL(val);
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `Unsupported protocol '${parsed.protocol}'. Webhook URL must use HTTP or HTTPS.`
+          });
+          return;
+        }
+
+        const isInternalAllowed = isAllowedInternalTarget(
+          parsed,
+          env.WEBHOOK_ALLOWED_INTERNAL_TARGETS
+        );
+
+        if (isInternalAllowed) {
+          return;
+        }
+
+        if (parsed.protocol === 'http:') {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Webhook URL must use HTTPS for public endpoints.'
+          });
+          return;
+        }
+
+        const rawHostname = parsed.hostname.toLowerCase();
+        const hostname = normalizeHostname(rawHostname);
+
+        if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Webhook destination hostname cannot be localhost.'
+          });
+          return;
+        }
+
+        if (net.isIP(hostname) && isPrivateOrReservedIp(hostname)) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: 'Webhook URL cannot point to a private or reserved IP address.'
+          });
+          return;
+        }
+      } catch {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Invalid URL structure.'
+        });
+      }
+    })
 });
 
 export const webhookRouter = Router();
