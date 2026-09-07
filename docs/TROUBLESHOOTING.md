@@ -27,22 +27,70 @@ JWT_ACCESS_SECRET=change_me_access_secret_at_least_32_chars
 JWT_REFRESH_SECRET=change_me_refresh_secret_at_least_32_chars
 ```
 
-## New schema not applied
+## New schema not applied & Database Migrations
 
-Docker MySQL init scripts only run when the volume is created for the first time.
+PayBridge uses a versioned TypeScript migration framework (`server/src/infrastructure/migrator.ts`) with SHA-256 checksums and MySQL advisory locking.
 
-If you added a new SQL file (e.g. `002_payment_schema.sql`) but the tables do not exist:
-
-```bash
-docker compose down -v
-docker compose up -d mysql
-```
-
-This destroys existing data. To preserve data, apply the migration manually:
+Do **not** drop Docker volumes or manually pipe unversioned SQL files. Instead, use the migration CLI:
 
 ```bash
-docker exec -i paybridge-mysql mysql -upaybridge -pchange_me paybridge < database/002_payment_schema.sql
+# Check current migration status
+npm run db:status
+
+# Apply all pending migrations (001 through 006)
+npm run db:migrate
+
+# Rollback the last applied migration if necessary
+npm run db:rollback
 ```
+
+If migrating inside Docker, ensure the database container is healthy:
+```bash
+docker compose exec paybridge-api npm run db:migrate
+```
+
+## Docker Stale Container Binary Risk
+
+`docker-compose.yml` builds service containers from `server.Dockerfile` using compiled TypeScript output. **Source directories (`server/src`) are NOT mounted as live development volumes in the worker/API containers.**
+
+If you make TypeScript changes in `server/src/`, running `docker compose restart` will **NOT** pick up new code. You must explicitly trigger a rebuild:
+
+```bash
+docker compose up -d --build paybridge-api paybridge-payment-worker paybridge-recovery-worker paybridge-webhook-worker paybridge-action-worker
+```
+
+## Action Worker Startup & Lifecycle
+
+The standalone container `paybridge-action-worker` executes `startActionWorker()` to consume recovery action jobs from `payment_processing_queue`.
+
+- Direct CLI execution (`node dist/workers/action.worker.js`) attaches process signal listeners via `createWorkerShutdownHandler` and drains in-flight action executions on `SIGTERM`.
+- Verified live running in Docker Compose with consumer tag registration.
+
+## Webhook Delivery & Local Container Networking
+
+`paybridge-webhook-worker` executes asynchronous, non-blocking retries with exponential backoff (1s, 2s, 4s, 8s, 16s up to 5 retries).
+
+- When a webhook delivery fails, the worker immediately acknowledges the message in RabbitMQ (`channel.ack(msg)`) to prevent blocking the channel's prefetch limit, and schedules republishing via a non-blocking background timer. Concurrent and subsequent webhook deliveries process without delay.
+- **Local Testing Note:** When registering webhook endpoints for local testing in Docker Compose, do **not** configure `http://localhost:4000/...` as `localhost` inside the worker container resolves to itself. Instead, use the internal Docker service address `http://paybridge-api:4000/api/webhooks/test-listener`.
+
+
+## LLM Provider Diagnostics
+
+PayBridge supports multiple LLM providers behind the `LLMProvider` abstraction (`server/src/infrastructure/llm/`):
+
+1. **Mock Provider (`LLM_PROVIDER=mock`)**:
+   - Deterministic, zero-cost, zero-network fallback used by default in CI and automated test suites.
+2. **OmniRoute (`LLM_PROVIDER=omniroute`)**:
+   - Live-certified on 2026-09-07 via `npm run demo:llm -- --omniroute`.
+   - Requires valid OmniRoute credentials in the environment.
+   - Diagnoses via `antigravity/gemini-3.6-flash-low` and plans via `antigravity/gemini-3.1-pro-low`.
+3. **OpenAI (`LLM_PROVIDER=openai`)**:
+   - Verified via automated unit tests (`openai-provider.test.ts`, 32 tests).
+   - Requires `OPENAI_API_KEY`. If missing, the demo harness refuses live execution with a clear diagnostic message.
+4. **OpenRouter (`HTTP 402 Payment Required`)**:
+   - Indicates insufficient balance/credits on the configured OpenRouter account. The circuit breaker trips or the system falls back to deterministic rules.
+5. **Gemini (`HTTP 429 Too Many Requests`)**:
+   - Indicates rate limiting or API quota exhaustion. The system executes exponential backoff or fails open to `rules.fallback.ts`.
 
 ## Payment returns ORDER_NOT_FOUND
 

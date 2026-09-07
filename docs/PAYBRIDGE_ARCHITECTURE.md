@@ -31,12 +31,15 @@ The system runs as six distinct processes / containerized services sharing a sin
 2. `paybridge-payment-worker`: Consumes from `payment_processing_queue` to simulate gateway interactions.
 3. `paybridge-webhook-worker`: Consumes from `webhook_delivery_queue` for outbound HTTP calls.
 4. `paybridge-dlq-worker`: Consumes dead letters.
-5. `paybridge-action-worker`: Consumes policy-approved recovery actions from `payment_processing_queue` with Redis distributed locking, effect idempotency checks, and gateway idempotency protection.
+5. `paybridge-action-worker`: Consumes policy-approved recovery actions from `payment_processing_queue` with Redis distributed locking, effect idempotency checks, gateway idempotency protection, and coordinated graceful shutdown draining. The standalone container executes `startActionWorker()` through the direct CLI entrypoint and remains running in Docker Compose.
 6. `paybridge-recovery-worker`: Consumes payment failure signals from `recovery_ingestion_queue` to ingest failures, create/reuse recovery cases, and drive Case State Machine transitions.
+
+> **Reconciliation Note (2026-09-07):** In the physical MySQL schema, merchant accounts are stored in the `users` table (`users.id = merchantId`, with `merchant_name`). References to a standalone `merchants` table in early diagrams represent a conceptual entity, not a separate physical SQL table.
 
 ### Communication & Database
 - **Tight Coupling:** Workers directly import repository layers instead of communicating via APIs or gRPC.
-- **Database:** MySQL 8.4 is the sole persistence layer, storing operational entities (`merchants`, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`).
+- **Database:** MySQL 8.4 is the sole persistence layer, storing operational entities (`users` representing merchants, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`).
+- **Operational Behavior:** Webhook delivery to merchant endpoints executes non-blocking asynchronous retries with exponential backoff (1s, 2s, 4s, 8s, 16s), freeing the channel prefetch slot immediately upon failure.
 - **Queues:** RabbitMQ uses direct exchanges with persistent messages, worker `prefetch(1)`, and a dead-letter exchange (DLX) routing to `payment_dlq`.
 - **Caching & Locks:** Redis 7 provides safe atomic distributed locks using unique UUID owner tokens and Lua compare-and-delete release scripts (`lock:order:${orderRef}`, `lock:worker:txn:${transactionId}`).
 
@@ -164,7 +167,7 @@ graph TD
 
 ### AI Agent Service (New)
 - **Purpose:** Encapsulate all non-deterministic LLM interactions.
-- **Responsibilities:** Prompt assembly, context injection, LangGraph workflow orchestration, tool execution, parsing outputs.
+- **Responsibilities:** Prompt assembly, context injection, deterministic agent workflow orchestration via custom TypeScript state machines (`diagnosis.agent.ts`, `decision.agent.ts`), tool execution, parsing outputs. *(Historical architecture referenced LangGraph; implemented with native TypeScript state machines to eliminate external dependency latency and ensure fail-closed execution).*
 - **Security Concerns:** Prompt injection, PII leakage. Payloads must be strictly scrubbed before transmission to external LLMs.
 
 ### Policy Engine (New)
@@ -180,12 +183,29 @@ graph TD
 - **Purpose:** Operator interface for triage, manual intervention, and certified audit trail export.
 - **Dependencies:** Consumes tenant-scoped REST APIs (`/api/recovery/*`, `/api/audit/*`) to render prioritized queues, inspection drawers, reasoning trace transcripts with masked PII, and 1-click audit downloads.
 
+### Current Product Surface / Persona Status
+
+- **Merchant Operator:**
+  - currently verifiable surfaces = Web Dashboard (`/dashboard`), Orders list and details (`/payments`, `/payments/:orderRef`), Payment creation modal (`/payments/new`), Recovery Cockpit (`/recovery` for triage queues, chronological timeline, agent reasoning trace inspection with masked PII, operator approvals/rejections, and certified audit trail export), and authenticated merchant profile/recovery REST endpoints (`/api/merchants/me`, `/api/recovery/*`, `/api/merchants/policies/*`).
+- **Merchant Developer:**
+  - currently verifiable surfaces = Web Developer Portal (`/developers`), interactive Swagger / OpenAPI Explorer (`/api-docs`), and server REST APIs for order and payment processing (`/api/payments/orders`, `/api/payments/orders/:orderRef/pay`), checkout abandonment telemetry (`/api/payments/orders/:orderRef/abandonment`, `/api/payments/checkout/timeout-detection`), webhook subscription configuration and manual retry (`/api/webhooks/configs`, `/api/webhooks/deliveries/:id/retry`), and policy configuration (`/api/merchants/policies`).
+- **Platform Operations Engineer:**
+  - currently verifiable surfaces = Health check endpoint (`GET /api/health`), Prometheus metrics endpoint (`GET /api/metrics`), Prometheus dashboard (`:9090`), Grafana dashboard (`:3000`), internal operations API (`GET /api/v1/ops/agent-traces/:id`), migration and database management CLI scripts (`npm run db:migrate`, `npm run db:seed`), structured child Pino logs with `correlationId`, and Docker Compose management CLI (`docker compose ps`, `docker compose logs`). No separate dedicated ops web portal is implemented.
+- **Risk/Compliance Reviewer:**
+  - currently verifiable surfaces = Certified compliance audit trail export endpoint (`GET /api/audit/cases/:idOrRef/export?format=csv|json` with SHA-256 `X-Audit-Signature`), Multi-Pillar Unified Explainability endpoint (`GET /api/recovery/cases/:idOrRef/explainability`), case timeline API (`GET /api/recovery/cases/:caseId/timeline`), sanitized reasoning traces API (`GET /api/recovery/cases/:caseId/traces`), and the 1-click audit download controls embedded in the Recovery Cockpit UI (`/recovery`). No separate standalone compliance portal is implemented.
+- **Finance Analyst:**
+  - currently verifiable surfaces = Recoverable Revenue & Leakage Ledger endpoint (`GET /api/merchants/recovery/ledger` with exact 0-variance integer minor units), Recovery Analytics REST endpoints (`GET /api/recovery/analytics`, `GET /api/merchants/recovery/analytics` computing volume KPIs, multi-tier recovery rates, and TTR percentiles), and summary analytics cards embedded in the Recovery Cockpit UI (`/recovery`). No separate standalone finance portal is implemented.
+- **Recovery Agent:**
+  - internal service role; not a human-facing application surface. Automated background pipeline orchestrating diagnosis, decision planning, policy checks, and action execution across `recovery.worker.ts`, `action.worker.ts`, and AI modules.
+
 ---
 
 ## 6. AI Architecture
 
-### Agent Orchestration via LangGraph
-The AI Agent Service uses a state-machine-like workflow (e.g., LangGraph) to bound LLM reasoning into discrete, observable steps.
+> **Reconciliation Note (2026-09-07):** While early architectural concepts referenced LangGraph, PayBridge AI implements custom, strongly typed TypeScript state machines for agent workflows (`case.state-machine.ts`, `diagnosis.agent.ts`, `decision.agent.ts`) without external LangGraph dependencies to maximize deterministic control, eliminate runtime latency, and guarantee fail-closed execution.
+
+### Agent Orchestration via Custom Bounded State Machines
+The AI Agent Service uses a state-machine workflow to bound LLM reasoning into discrete, observable steps.
 1. **Diagnosis Agent:** Analyzes raw gateway error codes, past customer history, and velocity to determine the root cause (e.g., "Temporary Insufficient Funds" vs "Hard Card Block").
 2. **Decision Agent (Recovery Planner):** Given the diagnosis, selects a playbook and proposes specific parameters (e.g., "Schedule retry for Friday at 9am").
 3. **Risk Agent:** Scores the probability of recovery (Propensity Score) to rank the triage queue.
@@ -196,10 +216,13 @@ Prompts are versioned and stored in the database, treated as configuration. The 
 ### Tool Calling & Bounded Execution
 Agents interact with the system strictly via predefined Tools (e.g., `get_merchant_rules()`, `calculate_optimal_time()`). The LLM does not execute code or query databases directly. Total token usage and execution timeouts (e.g., 15s max) are strictly enforced.
 
-### LLM Failover & Abstraction
+### LLM Failover & Multi-Provider Architecture
 The system implements an extensible provider abstraction layer (`LLMProvider`) orchestrated by `OrchestratedLLMProvider` with circuit breaking, concurrency limiting, and exponential retry on transient transport errors.
-- **Mock Provider (`MockLLMProvider`):** In-memory, deterministic provider for automated unit, integration, and CI testing with zero outbound network calls.
-- **OpenAI Provider (`OpenAIProvider` / BT-B1):** Production adapter utilizing the official OpenAI Node.js SDK (`openai@^7.10.0`), featuring task-based model mapping (`diagnosis` $\to$ `gpt-4o-mini`, `decision` $\to$ `gpt-4o`), JSON mode schema enforcement, token usage accounting, and strict credential protection.
+- **Mock Provider (`MockLLMProvider`):** In-memory, deterministic provider for automated unit, integration, and CI testing with zero outbound network calls *(Verified live on current rebuilt runtime via `npm run demo:llm` on 2026-09-07)*.
+- **OmniRoute Provider (`OmniRouteProvider`):** Local OpenAI-compatible gateway integration connecting to local/self-hosted model servers *(Certified live on 2026-09-07 via `npm run demo:llm -- --omniroute` with `antigravity/gemini-3.6-flash-low` and `antigravity/gemini-3.1-pro-low`)*.
+- **OpenAI Provider (`OpenAIProvider` / BT-B1):** Production adapter utilizing official Node.js SDK (`openai@^7.10.0`) with task-based routing (`gpt-4o-mini`, `gpt-4o`) *(Verified automated only on 2026-09-07; live external calls skipped without API key)*.
+- **Direct Gemini Provider (`GeminiProvider`):** Direct Google Generative AI integration *(Implemented; live diagnosis verified; decision limited by live 429 quota on 2026-09-07)*.
+- **OpenRouter Provider (`OpenRouterGeminiProvider`):** OpenRouter AI gateway integration *(Implemented; live diagnosis verified; decision limited by credit reservation HTTP 402 on 2026-09-07)*.
 
 ---
 
@@ -264,7 +287,7 @@ sequenceDiagram
 ## 9. Database Architecture
 
 ### Separation of Concerns
-1. **Operational Store (MySQL):** 3rd Normal Form schema for core entities (`merchants`, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`, `cases`). Optimized for ACID transactions and state transitions.
+1. **Operational Store (MySQL):** 3rd Normal Form schema for core entities (`users` representing merchants via `merchant_name`, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`, `cases`). Optimized for ACID transactions and state transitions.
 2. **Event Store (MySQL / Append-Only):** A dedicated schema where the application role only has `INSERT` and `SELECT` privileges. Stores immutable records of every action, policy decision, and manual override.
 3. **Redis:** Used exclusively for ephemeral data: caching (merchant configurations, API responses), rate limit counters, and safe atomic distributed locks (via Lua CAS scripts).
 
@@ -284,8 +307,8 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 - **Pagination:** Cursor-based pagination (`?cursor=XYZ&limit=20`) to guarantee stable results under concurrent writes, replacing unstable OFFSET pagination.
 
 ### Authentication & Error Handling
-- **JWT Auth:** Stateless session management for operators.
-- **API Keys:** For merchant integrations, hashed securely (bcrypt/argon2) in the database.
+- **JWT Auth:** Stateless session management for merchant portal and API authentication (`users.id` maps directly to `merchantId`). Access tokens have a 15-minute TTL; refresh tokens (7d TTL) are hashed with SHA-256 in MySQL `refresh_tokens`.
+- **API Keys:** Scoped merchant API keys are a Target / future capability (AUTH-004). Current merchant integration uses JWT Bearer tokens.
 - **Standardized Errors:** All errors return an RFC 7807 Problem Details JSON format, ensuring consumers can parse error codes consistently.
 
 ---
@@ -294,7 +317,7 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 
 ### Data Governance & PII Isolation
 - **Redaction Middleware:** Before any payload is logged or sent to the AI Agent Service, a sanitization utility strips defined PII fields (email, phone, address).
-- **Least Privilege:** Database users are segregated. The API user cannot drop tables; the Event Store user cannot update or delete rows.
+- **Least Privilege:** Target architecture specifies segregated database users (e.g., API user vs Event Store user). In the current runtime, all services connect via the configured `DB_USER` (`paybridge`), and append-only constraints for recovery `case_events` are enforced by application repository logic rather than database engine role segregation.
 - **Prompt Injection Protection:** User-generated inputs (e.g., customer email responses) are strictly isolated within delimiters in LLM prompts, and output is structurally validated (JSON schema) before taking action.
 
 ---
@@ -311,7 +334,7 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 ## 13. Deployment Architecture
 
 ### Current to Future State
-- **Current:** Docker Compose (12 services: MySQL 8.4, Redis 7, RabbitMQ 3, Prometheus, Grafana, API, Client, and 5 dedicated worker services: `paybridge-payment-worker`, `paybridge-webhook-worker`, `paybridge-dlq-worker`, `paybridge-action-worker`, `paybridge-recovery-worker`).
+- **Current:** Docker Compose orchestrates 12 defined container services (3 core infrastructure: MySQL 8.4, Redis 7, RabbitMQ 3; 2 observability: Prometheus, Grafana; 1 web frontend: Client; and 6 Node.js backend processes: 1 API server and 5 dedicated workers: `paybridge-payment-worker`, `paybridge-webhook-worker`, `paybridge-dlq-worker`, `paybridge-action-worker`, `paybridge-recovery-worker`).
 - **Target:** Kubernetes (EKS/GKE).
 - **CI/CD:** GitHub Actions executes automated tests, builds immutable Docker images tagged with Git SHA, and deploys via a GitOps model (e.g., ArgoCD).
 - **Configuration:** Runtime configurations and secrets are injected via Kubernetes Secrets / HashiCorp Vault, replacing static `.env` files.
@@ -343,7 +366,7 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 | **MySQL 8.4** | Relational Data | ACID compliance, proven reliability. Alternative: PostgreSQL (comparable, MySQL chosen for existing baseline). |
 | **RabbitMQ** | Message Broker | Advanced routing, native DLQs, delay plugins. Better suited for complex workflows than Kafka (which favors stream processing). |
 | **Redis** | Caching & Locks | Industry standard for high-performance ephemeral state and atomic operations. |
-| **LangGraph** | AI Orchestration | Provides cyclic, stateful workflows essential for bounded agentic reasoning. Alternative: AutoGen, raw API calls. |
+| **Custom State Machines** | AI Orchestration | Custom TypeScript state machines (`case.state-machine.ts`, `diagnosis.agent.ts`, `decision.agent.ts`). Historical concept referenced LangGraph; custom solution chosen to eliminate external dependency latency and guarantee fail-closed execution. |
 
 ---
 

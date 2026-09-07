@@ -9,6 +9,7 @@ import * as caseService from '../../modules/recovery/case.service.js';
 import {
   handleActionMessage,
   startActionWorker,
+  stopActionWorker,
   type ActionChannel,
   type ActionJobPayload
 } from '../../workers/action.worker.js';
@@ -564,6 +565,18 @@ describe('TASK-402: Action Handler Workers (RCV-010 / RTY-003 / POL-001 / Invari
 
       await worker.stop();
       expect(mockAmqpChannel.cancel).toHaveBeenCalledWith('amq.ctag-action-worker-1');
+    });
+
+    it('stops standalone worker cleanly via stopActionWorker', async () => {
+      const mockAmqpChannel = {
+        prefetch: vi.fn().mockResolvedValue(undefined),
+        consume: vi.fn().mockResolvedValue({ consumerTag: 'amq.ctag-action-worker-2' }),
+        cancel: vi.fn().mockResolvedValue(undefined)
+      } as unknown as amqp.Channel;
+
+      await startActionWorker(mockAmqpChannel);
+      await stopActionWorker();
+      expect(mockAmqpChannel.cancel).toHaveBeenCalledWith('amq.ctag-action-worker-2');
     });
   });
 });

@@ -450,36 +450,96 @@ export async function handleActionMessage(
 /*  Worker Startup & Graceful Shutdown Integration (Requirement 15)   */
 /* ------------------------------------------------------------------ */
 
+let actionConsumerTag: string | null = null;
+let actionChannel: amqp.Channel | null = null;
+const activeActionJobs = new Set<Promise<void>>();
+
+export async function stopActionWorker(): Promise<void> {
+  if (actionChannel && actionConsumerTag) {
+    logger.info({ consumerTag: actionConsumerTag }, '[Action Worker] Cancelling consumer subscription');
+    try {
+      await actionChannel.cancel(actionConsumerTag);
+    } catch (err) {
+      logger.warn({ err }, '[Action Worker] Notice: error while cancelling consumer tag');
+    }
+    actionConsumerTag = null;
+  }
+
+  if (activeActionJobs.size > 0) {
+    logger.info(
+      { inFlightCount: activeActionJobs.size },
+      '[Action Worker] Waiting for in-flight action jobs to finish'
+    );
+    await Promise.allSettled(Array.from(activeActionJobs));
+    logger.info('[Action Worker] All in-flight action jobs finished');
+  }
+}
+
 export async function startActionWorker(
   customChannel?: amqp.Channel,
   gatewayRunner: GatewayRunner = defaultActionGatewayRunner
 ): Promise<{ consumerTag: string; stop: () => Promise<void> }> {
   const ch = customChannel || (await getRabbitMQChannel());
+  actionChannel = ch;
   await ch.prefetch(1);
 
   const { consumerTag } = await ch.consume(
     QUEUES.PAYMENT_PROCESSING,
     (msg) => {
       if (msg) {
-        handleActionMessage(ch, msg, gatewayRunner).catch((err) => {
-          logger.error({ err }, '[Action Worker] Unhandled exception in handleActionMessage');
-        });
+        const jobPromise = handleActionMessage(ch, msg, gatewayRunner)
+          .catch((err) => {
+            logger.error({ err }, '[Action Worker] Unhandled exception in handleActionMessage');
+          })
+          .finally(() => {
+            activeActionJobs.delete(jobPromise);
+          });
+        activeActionJobs.add(jobPromise);
       }
     },
     { noAck: false }
   );
 
+  actionConsumerTag = consumerTag;
   logger.info({ consumerTag }, '[Action Worker] Action handler worker started');
+
+  const stop = async () => {
+    try {
+      await ch.cancel(consumerTag);
+      if (actionConsumerTag === consumerTag) {
+        actionConsumerTag = null;
+      }
+      logger.info({ consumerTag }, '[Action Worker] Action handler worker stopped');
+    } catch (err) {
+      logger.error({ err, consumerTag }, '[Action Worker] Error cancelling consumer');
+    }
+    if (activeActionJobs.size > 0) {
+      await Promise.allSettled(Array.from(activeActionJobs));
+    }
+  };
 
   return {
     consumerTag,
-    stop: async () => {
-      try {
-        await ch.cancel(consumerTag);
-        logger.info({ consumerTag }, '[Action Worker] Action handler worker stopped');
-      } catch (err) {
-        logger.error({ err, consumerTag }, '[Action Worker] Error cancelling consumer');
-      }
-    }
+    stop
   };
+}
+
+// If run directly via node/tsx
+if (
+  process.argv[1] &&
+  (process.argv[1].endsWith('action.worker.ts') || process.argv[1].endsWith('action.worker.js'))
+) {
+  import('../utils/shutdown.js').then(({ createWorkerShutdownHandler }) => {
+    startActionWorker()
+      .then(() => {
+        createWorkerShutdownHandler({
+          workerName: 'action-worker',
+          onStop: stopActionWorker
+        });
+      })
+      .catch((err) => {
+        logger.fatal({ err }, 'Failed to start action worker');
+        process.exit(1);
+      });
+  });
 }
