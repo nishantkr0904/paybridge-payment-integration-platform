@@ -119,7 +119,7 @@ export function isPrivateOrReservedIp(ip: string): boolean {
     const words = parseIpv6(ip);
     if (!words) return true; // Fail closed
 
-    // Check for IPv4-mapped IPv6: ::ffff:x.x.x.x (RFC 4291)
+    // Check for IPv4-mapped IPv6: ::ffff:x.x.x.x (RFC 4291 § 2.5.5.2)
     if (
       words[0] === 0 &&
       words[1] === 0 &&
@@ -132,6 +132,34 @@ export function isPrivateOrReservedIp(ip: string): boolean {
       const octet1 = words[6] & 0xff;
       const octet2 = words[7] >> 8;
       const octet3 = words[7] & 0xff;
+      return isPrivateOrReservedIp(`${octet0}.${octet1}.${octet2}.${octet3}`);
+    }
+
+    // Check for IPv4-compatible IPv6: ::x.x.x.x (RFC 4291 § 2.5.5.1, ::/96)
+    // Exclude :: (unspecified) and ::1 (loopback), which are evaluated explicitly below
+    if (
+      words[0] === 0 &&
+      words[1] === 0 &&
+      words[2] === 0 &&
+      words[3] === 0 &&
+      words[4] === 0 &&
+      words[5] === 0 &&
+      !(words[6] === 0 && words[7] <= 1)
+    ) {
+      const octet0 = words[6] >> 8;
+      const octet1 = words[6] & 0xff;
+      const octet2 = words[7] >> 8;
+      const octet3 = words[7] & 0xff;
+      return isPrivateOrReservedIp(`${octet0}.${octet1}.${octet2}.${octet3}`);
+    }
+
+    // Check for 6to4 transition: 2002::/16 (RFC 3056)
+    // Words 1 and 2 encode the embedded IPv4 address (bits 16-47)
+    if (words[0] === 0x2002) {
+      const octet0 = words[1] >> 8;
+      const octet1 = words[1] & 0xff;
+      const octet2 = words[2] >> 8;
+      const octet3 = words[2] & 0xff;
       return isPrivateOrReservedIp(`${octet0}.${octet1}.${octet2}.${octet3}`);
     }
 
@@ -166,6 +194,18 @@ export function isPrivateOrReservedIp(ip: string): boolean {
 
   // Not valid IPv4 or IPv6 -> fail closed
   return true;
+}
+
+/**
+ * Normalize hostname by stripping enclosing square brackets for IPv6 literals (e.g. "[::1]" -> "::1").
+ * Node URL parser preserves brackets in `url.hostname`.
+ */
+export function normalizeHostname(hostname: string): string {
+  const lower = hostname.toLowerCase();
+  if (lower.startsWith('[') && lower.endsWith(']')) {
+    return lower.slice(1, -1);
+  }
+  return lower;
 }
 
 /**
@@ -236,7 +276,9 @@ export async function validateWebhookDestination(
   }
 
   // 4. Obvious Hostname Disallowlist (localhost, 127.0.0.1, [::1])
-  const hostname = parsed.hostname.toLowerCase();
+  const rawHostname = parsed.hostname.toLowerCase();
+  const hostname = normalizeHostname(rawHostname);
+
   if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
     return {
       status: 'BLOCKED',
@@ -249,7 +291,7 @@ export async function validateWebhookDestination(
     if (isPrivateOrReservedIp(hostname)) {
       return {
         status: 'BLOCKED',
-        reason: `Destination IP address '${hostname}' is in a prohibited or private range`
+        reason: `Destination IP address '${rawHostname}' is in a prohibited or private range`
       };
     }
     return { status: 'ALLOWED' };

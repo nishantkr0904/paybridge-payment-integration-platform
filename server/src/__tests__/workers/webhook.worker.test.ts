@@ -445,6 +445,110 @@ describe('Webhook Worker Execution & Non-Blocking Retries (webhook.worker.ts)', 
         expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
       }
     });
+
+    it('rejects bracketed IPv6 loopback (https://[::1]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[::1]/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects bracketed IPv6 link-local (https://[fe80::1]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[fe80::1]/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects bracketed IPv4-mapped loopback (https://[::ffff:127.0.0.1]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[::ffff:127.0.0.1]/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects bracketed IPv4-mapped metadata (https://[::ffff:169.254.169.254]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[::ffff:169.254.169.254]/latest/meta-data'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects IPv4-compatible loopback (https://[::7f00:1]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[::7f00:1]/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects IPv4-compatible private address (https://[::a00:1]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[::a00:1]/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects IPv4-compatible metadata (https://[::a9fe:a9fe]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[::a9fe:a9fe]/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects 6to4 embedded loopback (https://[2002:7f00:1::]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[2002:7f00:1::]/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects 6to4 embedded metadata (https://[2002:a9fe:a9fe::]/webhooks)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://[2002:a9fe:a9fe::]/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('accepts legitimate paybridge-api:4000 ingress acceptance', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'http://paybridge-api:4000/api/webhooks/test-listener'
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects paybridge-api wrong-port rejection (paybridge-api:3306)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'http://paybridge-api:3306/webhooks'
+      });
+      expect(result.success).toBe(false);
+    });
   });
 
   /* ------------------------------------------------------------------ */
@@ -552,6 +656,45 @@ describe('Webhook Worker Execution & Non-Blocking Retries (webhook.worker.ts)', 
       expect(mockScheduleRetry).not.toHaveBeenCalled();
       expect(mockChannel.ack).toHaveBeenCalledWith(msg);
       expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+    });
+
+    it.each([
+      ['bracketed IPv6 loopback', 'https://[::1]/webhook'],
+      ['bracketed IPv6 link-local', 'https://[fe80::1]/webhook'],
+      ['bracketed IPv4-mapped loopback', 'https://[::ffff:127.0.0.1]/webhook'],
+      ['bracketed IPv4-compatible loopback', 'https://[::7f00:1]/webhook'],
+      ['bracketed 6to4 embedded loopback', 'https://[2002:7f00:1::]/webhook']
+    ])('blocks delivery to %s (%s) terminally without retries', async (_name, url) => {
+      vi.mocked(webhookRepo.getWebhookEndpoints).mockResolvedValue([
+        {
+          ...validEndpoint,
+          url
+        }
+      ]);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+
+      const hasBlockedLog = loggedEvents.some((e) =>
+        e.args.some(
+          (arg) =>
+            typeof arg === 'object' &&
+            arg !== null &&
+            (arg as Record<string, unknown>).reason === 'BLOCKED_SSRF_TARGET'
+        )
+      );
+      expect(hasBlockedLog).toBe(true);
     });
   });
 

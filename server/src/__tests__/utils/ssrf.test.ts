@@ -3,6 +3,7 @@ import {
   isPrivateOrReservedIp,
   isAllowedInternalTarget,
   validateWebhookDestination,
+  normalizeHostname,
   type DnsLookupFunction
 } from '../../utils/ssrf.js';
 
@@ -129,6 +130,58 @@ describe('SSRF Utility — IP Classification (isPrivateOrReservedIp)', () => {
 
     it('unwraps and allows public IPv4-mapped IPv6 like ::ffff:93.184.216.34', () => {
       expect(isPrivateOrReservedIp('::ffff:93.184.216.34')).toBe(false);
+    });
+  });
+
+  describe('IPv4-Compatible IPv6 (::/96 RFC 4291 § 2.5.5.1)', () => {
+    it('blocks loopback ::7f00:1 (embedded 127.0.0.1)', () => {
+      expect(isPrivateOrReservedIp('::7f00:1')).toBe(true);
+    });
+
+    it('blocks private class A ::a00:1 (embedded 10.0.0.1)', () => {
+      expect(isPrivateOrReservedIp('::a00:1')).toBe(true);
+    });
+
+    it('blocks cloud metadata ::a9fe:a9fe (embedded 169.254.169.254)', () => {
+      expect(isPrivateOrReservedIp('::a9fe:a9fe')).toBe(true);
+    });
+
+    it('blocks private class B ::ac10:1 (embedded 172.16.0.1)', () => {
+      expect(isPrivateOrReservedIp('::ac10:1')).toBe(true);
+    });
+
+    it('blocks private class C ::c0a8:1 (embedded 192.168.0.1)', () => {
+      expect(isPrivateOrReservedIp('::c0a8:1')).toBe(true);
+    });
+
+    it('allows public IPv4-compatible IPv6 like ::5db8:d822 (embedded 93.184.216.34)', () => {
+      expect(isPrivateOrReservedIp('::5db8:d822')).toBe(false);
+    });
+  });
+
+  describe('6to4 Transition Addresses (2002::/16 RFC 3056)', () => {
+    it('blocks embedded loopback 2002:7f00:1:: (127.0.0.1)', () => {
+      expect(isPrivateOrReservedIp('2002:7f00:1::')).toBe(true);
+    });
+
+    it('blocks embedded cloud metadata 2002:a9fe:a9fe:: (169.254.169.254)', () => {
+      expect(isPrivateOrReservedIp('2002:a9fe:a9fe::')).toBe(true);
+    });
+
+    it('blocks embedded private class A 2002:a00:1:: (10.0.0.1)', () => {
+      expect(isPrivateOrReservedIp('2002:a00:1::')).toBe(true);
+    });
+
+    it('blocks embedded private class C 2002:c0a8:1:: (192.168.0.1)', () => {
+      expect(isPrivateOrReservedIp('2002:c0a8:1::')).toBe(true);
+    });
+
+    it('allows public embedded IPv4 like 2002:5db8:d822:: (93.184.216.34)', () => {
+      expect(isPrivateOrReservedIp('2002:5db8:d822::')).toBe(false);
+    });
+
+    it('allows ordinary non-6to4 IPv6 addresses like 2001:db8::1', () => {
+      expect(isPrivateOrReservedIp('2001:db8::1')).toBe(false);
     });
   });
 
@@ -348,5 +401,103 @@ describe('SSRF Utility — Destination Validation (validateWebhookDestination)',
 
     expect(result.status).toBe('BLOCKED');
     expect(mockLookup).not.toHaveBeenCalled();
+  });
+
+  describe('Bracketed IPv6 Destination Validation (normalizeHostname)', () => {
+    it('blocks bracketed loopback https://[::1]/webhook without DNS lookup', async () => {
+      const mockLookup: DnsLookupFunction = vi.fn();
+      const result = await validateWebhookDestination(
+        'https://[::1]/webhook',
+        allowedConfig,
+        mockLookup
+      );
+      expect(result.status).toBe('BLOCKED');
+      expect(mockLookup).not.toHaveBeenCalled();
+    });
+
+    it('blocks bracketed link-local https://[fe80::1]/webhook without DNS lookup', async () => {
+      const mockLookup: DnsLookupFunction = vi.fn();
+      const result = await validateWebhookDestination(
+        'https://[fe80::1]/webhook',
+        allowedConfig,
+        mockLookup
+      );
+      expect(result.status).toBe('BLOCKED');
+      expect(mockLookup).not.toHaveBeenCalled();
+    });
+
+    it('blocks bracketed IPv4-mapped loopback https://[::ffff:127.0.0.1]/webhook', async () => {
+      const mockLookup: DnsLookupFunction = vi.fn();
+      const result = await validateWebhookDestination(
+        'https://[::ffff:127.0.0.1]/webhook',
+        allowedConfig,
+        mockLookup
+      );
+      expect(result.status).toBe('BLOCKED');
+      expect(mockLookup).not.toHaveBeenCalled();
+    });
+
+    it('blocks bracketed IPv4-mapped metadata https://[::ffff:169.254.169.254]/webhook', async () => {
+      const mockLookup: DnsLookupFunction = vi.fn();
+      const result = await validateWebhookDestination(
+        'https://[::ffff:169.254.169.254]/webhook',
+        allowedConfig,
+        mockLookup
+      );
+      expect(result.status).toBe('BLOCKED');
+      expect(mockLookup).not.toHaveBeenCalled();
+    });
+
+    it('blocks bracketed IPv4-compatible loopback https://[::7f00:1]/webhook', async () => {
+      const mockLookup: DnsLookupFunction = vi.fn();
+      const result = await validateWebhookDestination(
+        'https://[::7f00:1]/webhook',
+        allowedConfig,
+        mockLookup
+      );
+      expect(result.status).toBe('BLOCKED');
+      expect(mockLookup).not.toHaveBeenCalled();
+    });
+
+    it('blocks bracketed 6to4 loopback https://[2002:7f00:1::]/webhook', async () => {
+      const mockLookup: DnsLookupFunction = vi.fn();
+      const result = await validateWebhookDestination(
+        'https://[2002:7f00:1::]/webhook',
+        allowedConfig,
+        mockLookup
+      );
+      expect(result.status).toBe('BLOCKED');
+      expect(mockLookup).not.toHaveBeenCalled();
+    });
+
+    it('allows bracketed public IPv6 address https://[2606:4700:4700::1111]/webhook', async () => {
+      const mockLookup: DnsLookupFunction = vi.fn();
+      const result = await validateWebhookDestination(
+        'https://[2606:4700:4700::1111]/webhook',
+        allowedConfig,
+        mockLookup
+      );
+      expect(result.status).toBe('ALLOWED');
+      expect(mockLookup).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('SSRF Utility — Hostname Normalization (normalizeHostname)', () => {
+  it('strips enclosing brackets from IPv6 literal', () => {
+    expect(normalizeHostname('[::1]')).toBe('::1');
+    expect(normalizeHostname('[fe80::1]')).toBe('fe80::1');
+    expect(normalizeHostname('[::ffff:127.0.0.1]')).toBe('::ffff:127.0.0.1');
+  });
+
+  it('preserves unbracketed hostname and IPv4 literals', () => {
+    expect(normalizeHostname('example.com')).toBe('example.com');
+    expect(normalizeHostname('127.0.0.1')).toBe('127.0.0.1');
+    expect(normalizeHostname('paybridge-api')).toBe('paybridge-api');
+  });
+
+  it('handles lowercase conversion', () => {
+    expect(normalizeHostname('[FE80::1]')).toBe('fe80::1');
+    expect(normalizeHostname('EXAMPLE.COM')).toBe('example.com');
   });
 });

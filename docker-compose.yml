@@ -61,6 +61,7 @@ services:
       - JWT_REFRESH_SECRET=development_refresh_secret_change_in_production
       - REDIS_URL=redis://redis:6379
       - RABBITMQ_URL=amqp://rabbitmq:5672
+      - WEBHOOK_ALLOWED_INTERNAL_TARGETS=paybridge-api:4000
     depends_on:
       mysql:
         condition: service_healthy

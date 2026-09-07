@@ -3,7 +3,11 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
 import { env } from '../../config/env.js';
-import { isAllowedInternalTarget, isPrivateOrReservedIp } from '../../utils/ssrf.js';
+import {
+  isAllowedInternalTarget,
+  isPrivateOrReservedIp,
+  normalizeHostname
+} from '../../utils/ssrf.js';
 import { addWebhookEndpoint, listWebhookEndpoints, listWebhookDeliveries } from './webhook.service.js';
 
 export const addEndpointSchema = z.object({
@@ -38,7 +42,9 @@ export const addEndpointSchema = z.object({
           return;
         }
 
-        const hostname = parsed.hostname.toLowerCase();
+        const rawHostname = parsed.hostname.toLowerCase();
+        const hostname = normalizeHostname(rawHostname);
+
         if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
