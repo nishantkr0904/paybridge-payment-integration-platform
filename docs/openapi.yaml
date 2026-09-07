@@ -711,7 +711,110 @@ paths:
                     type: string
                   service:
                     type: string
+  /auth/register:
+    post:
+      summary: Register a new merchant user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+                - merchantName
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+                  minLength: 8
+                merchantName:
+                  type: string
+                  minLength: 2
+                  maxLength: 150
+      responses:
+        '201':
+          description: Merchant user created and tokens issued
+        '409':
+          description: Email already registered
+  /auth/login:
+    post:
+      summary: Authenticate merchant user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Authentication successful
+        '401':
+          description: Invalid credentials
+  /auth/refresh:
+    post:
+      summary: Refresh merchant session tokens
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - refreshToken
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Tokens rotated successfully
+        '401':
+          description: Invalid or revoked refresh token
+  /merchants/me:
+    get:
+      summary: Get authenticated merchant profile and operational summary
+      responses:
+        '200':
+          description: Merchant profile and counts
+        '401':
+          description: Unauthorized
   /payments/orders:
+    get:
+      summary: List merchant orders
+      parameters:
+        - in: query
+          name: status
+          schema:
+            type: string
+            enum: [pending, processing, success, failed]
+        - in: query
+          name: page
+          schema:
+            type: integer
+            default: 1
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of merchant orders
     post:
       summary: Create a new payment order
       requestBody:
@@ -734,12 +837,26 @@ paths:
       responses:
         '201':
           description: Order created
-  /payments/orders/{orderId}/pay:
+  /payments/orders/{orderRef}:
+    get:
+      summary: Get order status by reference
+      parameters:
+        - in: path
+          name: orderRef
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Order status details
+        '404':
+          description: Order not found
+  /payments/orders/{orderRef}/pay:
     post:
       summary: Process a payment for an order
       parameters:
         - in: path
-          name: orderId
+          name: orderRef
           required: true
           schema:
             type: string
@@ -924,6 +1041,41 @@ paths:
                 $ref: '#/components/schemas/Policy'
         '404':
           description: No active policy found
+    put:
+      summary: Update active policy configuration (aliases - /policy, /policies)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                autonomyTier:
+                  type: string
+                  enum: [T0, T1, T2, T3, T4]
+                maxRetries:
+                  type: integer
+                maxContactsPerCustomerPerWeek:
+                  type: integer
+                dailyBudgetMinorUnits:
+                  type: integer
+                maxIncentivePercent:
+                  type: number
+                quietHoursStart:
+                  type: string
+                quietHoursEnd:
+                  type: string
+                timezone:
+                  type: string
+                isActive:
+                  type: boolean
+      responses:
+        '200':
+          description: Policy updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Policy'
   /merchants/policies/{id}:
     get:
       summary: Get policy by ID
@@ -1097,6 +1249,20 @@ paths:
       responses:
         '200':
           description: Shed cases result with audit count
+  /merchants/recovery/cases/{caseId}/trace:
+    get:
+      summary: Retrieve sanitized agent reasoning trace summary for merchant cockpit
+      parameters:
+        - in: path
+          name: caseId
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Sanitized trace summary with PII placeholders
+        '404':
+          description: Case or trace not found
   /recovery/analytics:
     get:
       summary: Retrieve recovery performance KPIs, latency percentiles, and strategy breakdown
@@ -1303,3 +1469,59 @@ paths:
           description: Unauthorized
         '404':
           description: Recovery case not found or cross-tenant access prohibited
+  /webhooks/test-listener:
+    post:
+      summary: Dummy test webhook listener for local integration testing
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Webhook received acknowledgment
+  /webhooks/endpoints:
+    get:
+      summary: List configured webhook endpoints for the authenticated merchant
+      responses:
+        '200':
+          description: List of registered endpoints
+        '401':
+          description: Unauthorized
+    post:
+      summary: Register a new webhook endpoint URL
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - url
+              properties:
+                url:
+                  type: string
+                  format: uri
+      responses:
+        '201':
+          description: Webhook endpoint created
+        '400':
+          description: Invalid URL format
+        '401':
+          description: Unauthorized
+  /webhooks/deliveries:
+    get:
+      summary: List recent webhook delivery attempts
+      parameters:
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            default: 50
+      responses:
+        '200':
+          description: List of delivery attempts
+        '401':
+          description: Unauthorized
