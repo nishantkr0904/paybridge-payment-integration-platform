@@ -31,7 +31,7 @@ The system runs as six distinct processes / containerized services sharing a sin
 2. `paybridge-payment-worker`: Consumes from `payment_processing_queue` to simulate gateway interactions.
 3. `paybridge-webhook-worker`: Consumes from `webhook_delivery_queue` for outbound HTTP calls.
 4. `paybridge-dlq-worker`: Consumes dead letters.
-5. `paybridge-action-worker`: Consumes policy-approved recovery actions from `payment_processing_queue` with Redis distributed locking, effect idempotency checks, and gateway idempotency protection. *(Runtime Limitation observed on 2026-09-07: action worker logic is verified automated in Vitest, but standalone container execution in Docker Compose currently enters a restart loop due to a missing direct-run CLI execution block in `action.worker.ts`).*
+5. `paybridge-action-worker`: Consumes policy-approved recovery actions from `payment_processing_queue` with Redis distributed locking, effect idempotency checks, gateway idempotency protection, and coordinated graceful shutdown draining. The standalone container executes `startActionWorker()` through the direct CLI entrypoint and remains running in Docker Compose.
 6. `paybridge-recovery-worker`: Consumes payment failure signals from `recovery_ingestion_queue` to ingest failures, create/reuse recovery cases, and drive Case State Machine transitions.
 
 > **Reconciliation Note (2026-09-07):** In the physical MySQL schema, merchant accounts are stored in the `users` table (`users.id = merchantId`, with `merchant_name`). References to a standalone `merchants` table in early diagrams represent a conceptual entity, not a separate physical SQL table.
@@ -39,7 +39,7 @@ The system runs as six distinct processes / containerized services sharing a sin
 ### Communication & Database
 - **Tight Coupling:** Workers directly import repository layers instead of communicating via APIs or gRPC.
 - **Database:** MySQL 8.4 is the sole persistence layer, storing operational entities (`users` representing merchants, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`).
-- **Operational Limitation (2026-09-07):** Webhook delivery to invalid or unreachable merchant endpoints performs synchronous in-process backoff retries, temporarily delaying worker message consumption.
+- **Operational Behavior:** Webhook delivery to merchant endpoints executes non-blocking asynchronous retries with exponential backoff (1s, 2s, 4s, 8s, 16s), freeing the channel prefetch slot immediately upon failure.
 - **Queues:** RabbitMQ uses direct exchanges with persistent messages, worker `prefetch(1)`, and a dead-letter exchange (DLX) routing to `payment_dlq`.
 - **Caching & Locks:** Redis 7 provides safe atomic distributed locks using unique UUID owner tokens and Lua compare-and-delete release scripts (`lock:order:${orderRef}`, `lock:worker:txn:${transactionId}`).
 
