@@ -56,6 +56,7 @@ Authoritative Ledger Reconciliation & Multi-Channel Observability (Prometheus, G
 Every capability listed below is implemented and verified in the repository:
 
 - **Payment Failure Ingestion:** Idempotent ingestion of payment failure webhooks and gateway decline signals across card, UPI, and netbanking methods.
+- **Hardened Webhook SSRF Defense:** Multi-layer ingress and delivery-time destination validation blocking private IP ranges, loopback, link-local, cloud metadata, IPv4-mapped/compatible IPv6, and 6to4 addresses, with HTTPS enforcement, exact internal target allowlisting, and HTTP redirect neutralization.
 - **Checkout Abandonment Telemetry & Ingestion (BT-D1):** Canonical `checkout.abandoned` event schema capturing checkout stages (`method_selected`, `details_entered`, `submit_attempted_failed_validation`, `submit_blocked`), dwell times, and transaction metadata with transactional order history logging.
 - **Inactivity Timeout Detection (BT-D2):** Automated background detector evaluating pending checkout sessions against configurable inactivity thresholds (`CHECKOUT_ABANDONMENT_TIMEOUT_SECONDS`, default 900s) with boundary checking and duplicate scan suppression.
 - **Autonomous Abandonment Recovery (BT-D3):** End-to-end integration consuming abandonment events, creating linked recovery cases, orchestrating `CUSTOMER_ABANDONED` diagnosis, and generating personalized `CUSTOMER_OUTREACH` recovery links under policy governance.
@@ -395,9 +396,9 @@ npm run lint
 ```
 
 ### Verified Test Suite Counts
-- **Server Suite:** **489 tests passing**, 1 skipped (36 test suites covering infrastructure, modules, state machine, workers, AI agents, analytics, and Grafana verification).
+- **Server Suite:** **695 tests passing**, 1 skipped (41 test suites covering infrastructure, modules, state machine, workers, AI agents, analytics, Grafana verification, and SSRF security).
 - **Client Suite:** **12 tests passing** (React cockpit rendering, navigation, and state interactions).
-- **Total Automated Tests:** **501 tests passing** across the repository.
+- **Total Automated Tests:** **707 tests passing** across the repository.
 - **Build Status:** 0 TypeScript compiler errors (`tsc -p tsconfig.json`), 0 Vite production build errors.
 - **Lint Status:** 0 ESLint errors, 0 warnings across all workspaces.
 

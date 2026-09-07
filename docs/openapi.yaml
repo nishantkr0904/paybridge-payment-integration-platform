@@ -1492,6 +1492,12 @@ paths:
           description: Unauthorized
     post:
       summary: Register a new webhook endpoint URL
+      description: >
+        Registers a new webhook endpoint URL for the authenticated merchant.
+        Public webhook destinations require HTTPS. Plain HTTP is allowed only for explicitly
+        allowlisted internal authorities (WEBHOOK_ALLOWED_INTERNAL_TARGETS). Prohibited
+        destinations pointing to localhost, private (RFC 1918), link-local, cloud metadata,
+        or reserved IP ranges are rejected.
       requestBody:
         required: true
         content:
@@ -1504,11 +1510,12 @@ paths:
                 url:
                   type: string
                   format: uri
+                  example: https://merchant-api.example.com/webhooks
       responses:
         '201':
           description: Webhook endpoint created
         '400':
-          description: Invalid URL format
+          description: Validation error (invalid URL structure, non-HTTPS public protocol, or prohibited localhost/private/reserved destination)
         '401':
           description: Unauthorized
   /webhooks/deliveries:

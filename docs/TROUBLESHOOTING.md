@@ -68,10 +68,11 @@ The standalone container `paybridge-action-worker` executes `startActionWorker()
 
 ## Webhook Delivery & Local Container Networking
 
-`paybridge-webhook-worker` executes asynchronous, non-blocking retries with exponential backoff (1s, 2s, 4s, 8s, 16s up to 5 retries).
+`paybridge-webhook-worker` executes asynchronous, non-blocking retries with exponential backoff (1s, 2s, 4s, 8s, 16s up to 5 retries) for transient failures (such as temporary DNS lookup errors or 5xx server responses).
 
-- When a webhook delivery fails, the worker immediately acknowledges the message in RabbitMQ (`channel.ack(msg)`) to prevent blocking the channel's prefetch limit, and schedules republishing via a non-blocking background timer. Concurrent and subsequent webhook deliveries process without delay.
-- **Local Testing Note:** When registering webhook endpoints for local testing in Docker Compose, do **not** configure `http://localhost:4000/...` as `localhost` inside the worker container resolves to itself. Instead, use the internal Docker service address `http://paybridge-api:4000/api/webhooks/test-listener`.
+- When a transient webhook delivery failure occurs, the worker immediately acknowledges the message in RabbitMQ (`channel.ack(msg)`) to prevent blocking the channel's prefetch limit, and schedules republishing via a non-blocking background timer. Concurrent and subsequent webhook deliveries process without delay.
+- **SSRF Validation & Terminal Failures:** Outbound webhook destinations are validated against SSRF policy at both ingress registration and delivery time. Deterministic policy violations—such as destinations resolving to private IP ranges (RFC 1918), loopback, link-local/cloud metadata (`169.254.169.254`), IPv6 transition ranges (`::/96`, `2002::/16`), plain-HTTP public URLs, unauthorized internal ports, or unexpected HTTP redirects—are treated as terminal failures. The worker updates the delivery status to `failed`, acknowledges the message, and does **not** schedule retries.
+- **Local Testing Note:** When registering webhook endpoints for local testing in Docker Compose, do **not** configure `http://localhost:4000/...` as `localhost` is rejected by SSRF validation at both ingress and delivery. Instead, use the internal Docker service address `http://paybridge-api:4000/api/webhooks/test-listener`. This exact host and port is explicitly allowlisted via `WEBHOOK_ALLOWED_INTERNAL_TARGETS=paybridge-api:4000` in `docker-compose.yml`. Other internal hosts, services (such as `paybridge-mysql` or `paybridge-redis`), and unauthorized ports are not automatically allowed and will be blocked by SSRF policy.
 
 
 ## LLM Provider Diagnostics

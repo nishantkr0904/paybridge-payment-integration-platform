@@ -29,7 +29,7 @@ The existing PayBridge implementation is a modular monolith written in Node.js (
 The system runs as six distinct processes / containerized services sharing a single codebase:
 1. `paybridge-api`: Serves HTTP REST traffic.
 2. `paybridge-payment-worker`: Consumes from `payment_processing_queue` to simulate gateway interactions.
-3. `paybridge-webhook-worker`: Consumes from `webhook_delivery_queue` for outbound HTTP calls.
+3. `paybridge-webhook-worker`: Consumes from `webhook_queue` for outbound HTTP calls.
 4. `paybridge-dlq-worker`: Consumes dead letters.
 5. `paybridge-action-worker`: Consumes policy-approved recovery actions from `payment_processing_queue` with Redis distributed locking, effect idempotency checks, gateway idempotency protection, and coordinated graceful shutdown draining. The standalone container executes `startActionWorker()` through the direct CLI entrypoint and remains running in Docker Compose.
 6. `paybridge-recovery-worker`: Consumes payment failure signals from `recovery_ingestion_queue` to ingest failures, create/reuse recovery cases, and drive Case State Machine transitions.
@@ -39,7 +39,7 @@ The system runs as six distinct processes / containerized services sharing a sin
 ### Communication & Database
 - **Tight Coupling:** Workers directly import repository layers instead of communicating via APIs or gRPC.
 - **Database:** MySQL 8.4 is the sole persistence layer, storing operational entities (`users` representing merchants, `orders`, `transactions`, `idempotency_keys`, `webhook_endpoints`, `webhook_deliveries`).
-- **Operational Behavior:** Webhook delivery to merchant endpoints executes non-blocking asynchronous retries with exponential backoff (1s, 2s, 4s, 8s, 16s), freeing the channel prefetch slot immediately upon failure.
+- **Operational Behavior:** Webhook delivery to merchant endpoints executes non-blocking asynchronous retries with exponential backoff (1s, 2s, 4s, 8s, 16s) for transient errors, freeing the channel prefetch slot immediately upon failure. Deterministic security failures (SSRF violations or unexpected HTTP redirects) are terminally dropped, marked `failed`, and acknowledged without retries.
 - **Queues:** RabbitMQ uses direct exchanges with persistent messages, worker `prefetch(1)`, and a dead-letter exchange (DLX) routing to `payment_dlq`.
 - **Caching & Locks:** Redis 7 provides safe atomic distributed locks using unique UUID owner tokens and Lua compare-and-delete release scripts (`lock:order:${orderRef}`, `lock:worker:txn:${transactionId}`).
 
@@ -236,12 +236,12 @@ The system implements an extensible provider abstraction layer (`LLMProvider`) o
 - **Queues:**
   - `payment_processing_queue` - Consumed by `payment.worker.ts` and `action.worker.ts` with `prefetch(1)`.
   - `recovery_ingestion_queue` - Consumed by `recovery.worker.ts` with `prefetch(1)`.
-  - `webhook_delivery_queue` - Consumed by `webhook.worker.ts`.
+  - `webhook_queue` - Consumed by `webhook.worker.ts`.
   - `retry_delay_holding_queue` - Native TTL/DLX delayed holding queue for scheduled retries (`TASK-401`).
   - `payment_dlq` - Bound to `dlx_exchange` with routing key `payment_dlq_key`.
 - **Worker Execution & Retry Semantics:**
-  - Transient failures are retried up to `MAX_PAYMENT_RETRIES = 3`.
-  - Once retries are exhausted, the database status is marked `failed` and the message is rejected without requeue (`nack(msg, false, false)`), routing it to the DLQ.
+  - Payment worker: Transient payment failures are retried up to `MAX_PAYMENT_RETRIES = 3`. Once retries are exhausted, the database status is marked `failed` and the message is rejected without requeue (`nack(msg, false, false)`), routing it to the DLQ.
+  - Webhook worker: Transient delivery failures (such as temporary DNS errors or 5xx server responses) execute non-blocking asynchronous retries with exponential backoff (1s, 2s, 4s, 8s, 16s up to 5 retries), acknowledging the original message immediately to preserve channel prefetch slots. In contrast, deterministic security failures (destinations blocked by SSRF policy or unexpected HTTP redirects) result in immediate terminal failure (`status: 'failed'`), message acknowledgment, and zero retries.
 
 ### Idempotency & Concurrency Guarantees
 - **Durable Request Idempotency:** API write requests (`POST /api/payments/orders`, `POST /api/payments/orders/:orderRef/pay`) support `Idempotency-Key` / `x-idempotency-key` headers. A durable record in MySQL `idempotency_keys` with unique key `(merchant_id, idempotency_key)` and SHA-256 canonical body hash prevents duplicate writes, catches payload mismatches with `409 IDEMPOTENCY_KEY_MISMATCH`, isolates concurrent in-flight requests with `409 IDEMPOTENCY_IN_PROGRESS`, and replays cached completed responses.
@@ -319,6 +319,12 @@ Isolation is enforced at the repository layer. Every operational query must inhe
 - **Redaction Middleware:** Before any payload is logged or sent to the AI Agent Service, a sanitization utility strips defined PII fields (email, phone, address).
 - **Least Privilege:** Target architecture specifies segregated database users (e.g., API user vs Event Store user). In the current runtime, all services connect via the configured `DB_USER` (`paybridge`), and append-only constraints for recovery `case_events` are enforced by application repository logic rather than database engine role segregation.
 - **Prompt Injection Protection:** User-generated inputs (e.g., customer email responses) are strictly isolated within delimiters in LLM prompts, and output is structurally validated (JSON schema) before taking action.
+
+### Webhook SSRF Protection
+- **Multi-Layer Destination Validation:** Webhook destinations are checked at ingress (`POST /api/webhooks/endpoints`) via schema validation and strictly re-validated at delivery time immediately prior to issuing HTTP dispatches (`validateWebhookDestination` in `server/src/utils/ssrf.ts`).
+- **Prohibited Address Classification:** Blocks private/reserved IPv4 ranges (RFC 1918), loopback (`127.0.0.0/8`, `::1`), link-local/cloud metadata (`169.254.0.0/16`, `fe80::/10`), multicast, IPv4-mapped IPv6 (`::ffff:0:0/96`), IPv4-compatible IPv6 (`::/96`), and 6to4 transition addresses (`2002::/16`). Hostnames are normalized to strip IPv6 literal brackets before evaluation.
+- **Protocol & Authority Restrictions:** Public endpoints require HTTPS. Plain HTTP is restricted to explicitly allowlisted internal targets configured via `WEBHOOK_ALLOWED_INTERNAL_TARGETS` (e.g., `paybridge-api:4000`). Other internal hosts or unauthorized ports are rejected.
+- **Multi-Answer DNS & Redirect Neutralization:** Resolves all IP addresses for destination hostnames via `dns.lookup(hostname, { all: true })` and blocks if any returned IP address falls within prohibited ranges. Outbound requests enforce `redirect: 'error'` to prevent redirect-based intranet traversal, treating redirects as terminal failures.
 
 ---
 
