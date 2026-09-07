@@ -10,6 +10,12 @@ import {
 } from '../modules/webhook/webhook.repository.js';
 import { generateUlid } from '../utils/ulid.js';
 
+import { env } from '../config/env.js';
+import {
+  validateWebhookDestination,
+  type DnsLookupFunction
+} from '../utils/ssrf.js';
+
 export const MAX_WEBHOOK_RETRIES = 5;
 
 export interface WebhookChannel {
@@ -27,6 +33,8 @@ export interface WebhookHandlerOptions {
   fetchFn?: typeof fetch;
   scheduleRetry?: (action: () => void, delayMs: number) => NodeJS.Timeout | unknown;
   maxRetries?: number;
+  dnsLookupFn?: DnsLookupFunction;
+  allowedInternalTargets?: string;
 }
 
 export interface PendingWebhookRetry {
@@ -77,6 +85,22 @@ export function clearPendingWebhookRetries(): void {
     clearTimeout(pending.timer);
   }
   pendingWebhookRetries.clear();
+}
+
+export function isRedirectError(err: unknown): boolean {
+  if (!err) return false;
+  const errorObj = err as { message?: string; cause?: unknown };
+  const message = typeof errorObj.message === 'string' ? errorObj.message.toLowerCase() : '';
+  const causeMessage =
+    errorObj.cause && typeof (errorObj.cause as { message?: string }).message === 'string'
+      ? (errorObj.cause as { message: string }).message.toLowerCase()
+      : '';
+  const str = String(err).toLowerCase();
+  return (
+    message.includes('redirect') ||
+    causeMessage.includes('redirect') ||
+    str.includes('redirect')
+  );
 }
 
 /* ------------------------------------------------------------------ */
@@ -168,6 +192,35 @@ export async function handleWebhookMessage(
       null
     );
 
+    const destinationValidation = await validateWebhookDestination(
+      activeEndpoint.url,
+      options?.allowedInternalTargets ?? env.WEBHOOK_ALLOWED_INTERNAL_TARGETS,
+      options?.dnsLookupFn
+    );
+
+    if (destinationValidation.status === 'BLOCKED') {
+      workerLogger.warn(
+        {
+          reason: 'BLOCKED_SSRF_TARGET',
+          detail: destinationValidation.reason,
+          url: activeEndpoint.url
+        },
+        `[Webhook Worker] Delivery blocked by SSRF policy: ${destinationValidation.reason}`
+      );
+      await updateWebhookDelivery(deliveryId, 'failed', null).catch(() => {});
+      channel.ack(msg);
+      return;
+    }
+
+    if (destinationValidation.status === 'DNS_ERROR') {
+      workerLogger.error(
+        { err: destinationValidation.error, url: activeEndpoint.url },
+        `[Webhook Worker] DNS resolution failed for webhook target`
+      );
+      await updateWebhookDelivery(deliveryId, 'failed', null).catch(() => {});
+      throw destinationValidation.error;
+    }
+
     const fetchImpl = options?.fetchFn ?? fetch;
 
     try {
@@ -179,6 +232,7 @@ export async function handleWebhookMessage(
           'User-Agent': 'PayBridge-Webhook/1.0'
         },
         body: payloadString,
+        redirect: 'error',
         signal: AbortSignal.timeout(5000)
       });
 
@@ -193,6 +247,21 @@ export async function handleWebhookMessage(
         throw new Error(`Non-success HTTP status ${response.status}`);
       }
     } catch (deliveryError) {
+      if (isRedirectError(deliveryError)) {
+        workerLogger.warn(
+          {
+            reason: 'BLOCKED_SSRF_TARGET',
+            detail: 'REDIRECT_NOT_ALLOWED',
+            url: activeEndpoint.url,
+            err: deliveryError
+          },
+          `[Webhook Worker] Delivery blocked by SSRF policy: redirect encountered`
+        );
+        await updateWebhookDelivery(deliveryId, 'failed', null).catch(() => {});
+        channel.ack(msg);
+        return;
+      }
+
       workerLogger.error({ err: deliveryError }, `[Webhook Worker] Delivery failed`);
       await updateWebhookDelivery(deliveryId, 'failed', null).catch(() => {});
       throw deliveryError;

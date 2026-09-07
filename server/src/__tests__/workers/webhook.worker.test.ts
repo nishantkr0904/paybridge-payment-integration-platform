@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import dns from 'node:dns/promises';
+import type { LookupAddress } from 'node:dns';
 import type amqp from 'amqplib';
 import * as webhookRepo from '../../modules/webhook/webhook.repository.js';
+import { env } from '../../config/env.js';
+import { logger } from '../../utils/logger.js';
+import { addEndpointSchema } from '../../modules/webhook/webhook.routes.js';
 import {
   handleWebhookMessage,
   startWebhookWorker,
@@ -8,9 +13,17 @@ import {
   clearPendingWebhookRetries,
   flushPendingWebhookRetries,
   scheduleDelayedWebhookPublish,
+  isRedirectError,
   MAX_WEBHOOK_RETRIES,
   type WebhookChannel
 } from '../../workers/webhook.worker.js';
+
+vi.mock('node:dns/promises', () => ({
+  default: {
+    lookup: vi.fn()
+  },
+  lookup: vi.fn()
+}));
 
 vi.mock('../../infrastructure/rabbitmq.js', () => ({
   getRabbitMQChannel: vi.fn(),
@@ -30,6 +43,8 @@ vi.mock('../../modules/webhook/webhook.repository.js', () => ({
 
 describe('Webhook Worker Execution & Non-Blocking Retries (webhook.worker.ts)', () => {
   let mockChannel: WebhookChannel;
+  let loggedEvents: Array<{ level: string; args: unknown[] }> = [];
+  const originalChild = logger.child;
 
   function createMockMessage(payload: unknown, headers: Record<string, unknown> = {}): amqp.ConsumeMessage {
     const content =
@@ -82,6 +97,28 @@ describe('Webhook Worker Execution & Non-Blocking Retries (webhook.worker.ts)', 
   beforeEach(() => {
     vi.clearAllMocks();
     clearPendingWebhookRetries();
+    loggedEvents = [];
+
+    // Default DNS mock resolves to a legitimate public IP address
+    vi.mocked(dns.lookup).mockResolvedValue([
+      { address: '93.184.216.34', family: 4 }
+    ] as unknown as LookupAddress);
+
+    // Spy on logger child to capture structured log events (e.g. BLOCKED_SSRF_TARGET)
+    logger.child = function (bindings: Record<string, unknown>) {
+      const child = originalChild.call(logger, bindings);
+      const origWarn = child.warn;
+      const origError = child.error;
+      child.warn = (...args: Parameters<typeof origWarn>) => {
+        loggedEvents.push({ level: 'warn', args });
+        return origWarn.apply(child, args);
+      };
+      child.error = (...args: Parameters<typeof origError>) => {
+        loggedEvents.push({ level: 'error', args });
+        return origError.apply(child, args);
+      };
+      return child;
+    } as typeof logger.child;
 
     mockChannel = {
       ack: vi.fn(),
@@ -96,6 +133,7 @@ describe('Webhook Worker Execution & Non-Blocking Retries (webhook.worker.ts)', 
 
   afterEach(() => {
     clearPendingWebhookRetries();
+    logger.child = originalChild;
   });
 
   /* ------------------------------------------------------------------ */
@@ -130,7 +168,8 @@ describe('Webhook Worker Execution & Non-Blocking Retries (webhook.worker.ts)', 
             'Content-Type': 'application/json',
             'x-paybridge-signature': expect.any(String),
             'User-Agent': 'PayBridge-Webhook/1.0'
-          })
+          }),
+          redirect: 'error'
         })
       );
 
@@ -301,6 +340,499 @@ describe('Webhook Worker Execution & Non-Blocking Retries (webhook.worker.ts)', 
       // Trigger flushPendingWebhookRetries directly
       flushPendingWebhookRetries();
       expect(mockAction).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  4. Ingress Route Validation (addEndpointSchema)                   */
+  /* ------------------------------------------------------------------ */
+
+  describe('4. Ingress Route Validation (addEndpointSchema)', () => {
+    const originalAllowed = env.WEBHOOK_ALLOWED_INTERNAL_TARGETS;
+
+    beforeEach(() => {
+      (env as { WEBHOOK_ALLOWED_INTERNAL_TARGETS: string }).WEBHOOK_ALLOWED_INTERNAL_TARGETS =
+        'paybridge-api:4000';
+    });
+
+    afterEach(() => {
+      (env as { WEBHOOK_ALLOWED_INTERNAL_TARGETS: string }).WEBHOOK_ALLOWED_INTERNAL_TARGETS =
+        originalAllowed;
+    });
+
+    it('accepts valid public HTTPS endpoints', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://merchant-api.example.com/webhooks'
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects public plaintext HTTP endpoints', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'http://merchant-api.example.com/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/HTTPS for public endpoints/i);
+      }
+    });
+
+    it('accepts exact configured internal target over HTTP', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'http://paybridge-api:4000/api/v1/webhook-test'
+      });
+      expect(result.success).toBe(true);
+    });
+
+    it('rejects internal target on unauthorized port (3306)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'http://paybridge-api:3306/webhooks'
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it('rejects non-HTTP/HTTPS protocol (ftp:)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'ftp://merchant-api.example.com/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/Unsupported protocol/i);
+      }
+    });
+
+    it('rejects localhost hostname on HTTP and HTTPS', () => {
+      const httpResult = addEndpointSchema.safeParse({
+        url: 'http://localhost/webhooks'
+      });
+      expect(httpResult.success).toBe(false);
+
+      const httpsResult = addEndpointSchema.safeParse({
+        url: 'https://localhost/webhooks'
+      });
+      expect(httpsResult.success).toBe(false);
+      if (!httpsResult.success) {
+        expect(httpsResult.error.issues[0].message).toMatch(/cannot be localhost/i);
+      }
+    });
+
+    it('rejects literal loopback IP (127.0.0.1)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://127.0.0.1/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects literal cloud metadata IP (169.254.169.254)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://169.254.169.254/latest/meta-data'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+
+    it('rejects literal private RFC 1918 IP (10.0.0.1)', () => {
+      const result = addEndpointSchema.safeParse({
+        url: 'https://10.0.0.1/webhooks'
+      });
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues[0].message).toMatch(/private or reserved IP address/i);
+      }
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  5. Delivery-Time SSRF Validation & Terminal Drop Handling        */
+  /* ------------------------------------------------------------------ */
+
+  describe('5. Delivery-Time SSRF Validation & Terminal Drop Handling', () => {
+    it('blocks destination resolving to private/loopback IP (127.0.0.1), acks message, logs BLOCKED_SSRF_TARGET, and does not retry', async () => {
+      vi.mocked(dns.lookup).mockResolvedValue([
+        { address: '127.0.0.1', family: 4 }
+      ] as unknown as LookupAddress);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.publish).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+
+      const hasBlockedLog = loggedEvents.some((e) =>
+        e.args.some(
+          (arg) =>
+            typeof arg === 'object' &&
+            arg !== null &&
+            (arg as Record<string, unknown>).reason === 'BLOCKED_SSRF_TARGET'
+        )
+      );
+      expect(hasBlockedLog).toBe(true);
+    });
+
+    it('blocks destination resolving to mixed public and private IPs (93.184.216.34 and 10.0.0.1)', async () => {
+      vi.mocked(dns.lookup).mockResolvedValue([
+        { address: '93.184.216.34', family: 4 },
+        { address: '10.0.0.1', family: 4 }
+      ] as unknown as LookupAddress);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+
+      const hasBlockedLog = loggedEvents.some((e) =>
+        e.args.some(
+          (arg) =>
+            typeof arg === 'object' &&
+            arg !== null &&
+            (arg as Record<string, unknown>).reason === 'BLOCKED_SSRF_TARGET'
+        )
+      );
+      expect(hasBlockedLog).toBe(true);
+    });
+
+    it('blocks destination resolving to IPv4-mapped IPv6 loopback (::ffff:127.0.0.1)', async () => {
+      vi.mocked(dns.lookup).mockResolvedValue([
+        { address: '::ffff:127.0.0.1', family: 6 }
+      ] as unknown as LookupAddress);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+    });
+
+    it('blocks destination resolving to cloud metadata IP (169.254.169.254)', async () => {
+      vi.mocked(dns.lookup).mockResolvedValue([
+        { address: '169.254.169.254', family: 4 }
+      ] as unknown as LookupAddress);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  6. Internal Authority & Port Restrictions                        */
+  /* ------------------------------------------------------------------ */
+
+  describe('6. Delivery-Time Internal Authority & Port Restrictions', () => {
+    it('allows delivery to exact allowlisted internal authority (paybridge-api:4000)', async () => {
+      vi.mocked(webhookRepo.getWebhookEndpoints).mockResolvedValue([
+        {
+          ...validEndpoint,
+          url: 'http://paybridge-api:4000/api/v1/webhook-test'
+        }
+      ]);
+
+      const mockFetch = vi.fn().mockResolvedValue({ status: 200 } as Response);
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        allowedInternalTargets: 'paybridge-api:4000'
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'http://paybridge-api:4000/api/v1/webhook-test',
+        expect.objectContaining({ redirect: 'error' })
+      );
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'success', 200);
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+    });
+
+    it('blocks internal authority on unauthorized port (paybridge-api:3306)', async () => {
+      vi.mocked(webhookRepo.getWebhookEndpoints).mockResolvedValue([
+        {
+          ...validEndpoint,
+          url: 'http://paybridge-api:3306/webhooks'
+        }
+      ]);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry,
+        allowedInternalTargets: 'paybridge-api:4000'
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+    });
+
+    it('blocks internal authority on Redis port (paybridge-api:6379)', async () => {
+      vi.mocked(webhookRepo.getWebhookEndpoints).mockResolvedValue([
+        {
+          ...validEndpoint,
+          url: 'http://paybridge-api:6379/webhooks'
+        }
+      ]);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry,
+        allowedInternalTargets: 'paybridge-api:4000'
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+    });
+
+    it('blocks internal authority without explicit port 4000 (http://paybridge-api/webhooks)', async () => {
+      vi.mocked(webhookRepo.getWebhookEndpoints).mockResolvedValue([
+        {
+          ...validEndpoint,
+          url: 'http://paybridge-api/webhooks'
+        }
+      ]);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry,
+        allowedInternalTargets: 'paybridge-api:4000'
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+    });
+
+    it('blocks other Docker internal services (paybridge-mysql:3306, paybridge-redis:6379, paybridge-rabbitmq:5672)', async () => {
+      const blockedUrls = [
+        'http://paybridge-mysql:3306/webhooks',
+        'http://paybridge-redis:6379/webhooks',
+        'http://paybridge-rabbitmq:5672/webhooks'
+      ];
+
+      for (const url of blockedUrls) {
+        vi.mocked(webhookRepo.getWebhookEndpoints).mockResolvedValue([
+          {
+            ...validEndpoint,
+            url
+          }
+        ]);
+
+        const mockFetch = vi.fn();
+        const mockScheduleRetry = vi.fn();
+        const msg = createMockMessage(validPayload);
+
+        await handleWebhookMessage(mockChannel, msg, {
+          fetchFn: mockFetch,
+          scheduleRetry: mockScheduleRetry,
+          allowedInternalTargets: 'paybridge-api:4000'
+        });
+
+        expect(mockFetch).not.toHaveBeenCalled();
+        expect(mockScheduleRetry).not.toHaveBeenCalled();
+        expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      }
+    });
+
+    it('blocks localhost:4000 even if port 4000 is used', async () => {
+      vi.mocked(webhookRepo.getWebhookEndpoints).mockResolvedValue([
+        {
+          ...validEndpoint,
+          url: 'http://localhost:4000/webhooks'
+        }
+      ]);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry,
+        allowedInternalTargets: 'paybridge-api:4000'
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  7. Transient DNS Failure vs Deterministic SSRF Distinction        */
+  /* ------------------------------------------------------------------ */
+
+  describe('7. Transient DNS Failure Handling', () => {
+    it('propagates transient DNS error (EAI_AGAIN) into standard retry pipeline with backoff and does NOT log BLOCKED_SSRF_TARGET', async () => {
+      const dnsError = Object.assign(new Error('getaddrinfo EAI_AGAIN'), {
+        code: 'EAI_AGAIN'
+      });
+      vi.mocked(dns.lookup).mockRejectedValue(dnsError);
+
+      const mockFetch = vi.fn();
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry
+      });
+
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+
+      // Must schedule retry with 1000ms backoff
+      expect(mockScheduleRetry).toHaveBeenCalledWith(expect.any(Function), 1000);
+
+      // Must NOT log BLOCKED_SSRF_TARGET for transient DNS failures
+      const hasBlockedLog = loggedEvents.some((e) =>
+        e.args.some(
+          (arg) =>
+            typeof arg === 'object' &&
+            arg !== null &&
+            (arg as Record<string, unknown>).reason === 'BLOCKED_SSRF_TARGET'
+        )
+      );
+      expect(hasBlockedLog).toBe(false);
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  8. Redirect Policy & Terminal Drop Rejection                      */
+  /* ------------------------------------------------------------------ */
+
+  describe('8. Redirect Policy & Rejection', () => {
+    it('rejects HTTP redirect as terminal security failure, acks message, logs BLOCKED_SSRF_TARGET, and does not retry', async () => {
+      // WHATWG Fetch / undici throws TypeError: fetch failed with cause unexpected redirect when redirect: 'error'
+      const redirectError = new TypeError('fetch failed', {
+        cause: new Error('unexpected redirect')
+      });
+
+      const mockFetch = vi.fn().mockRejectedValue(redirectError);
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://merchant-api.example.com/webhooks',
+        expect.objectContaining({ redirect: 'error' })
+      );
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.publish).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+
+      const hasBlockedLog = loggedEvents.some((e) =>
+        e.args.some(
+          (arg) =>
+            typeof arg === 'object' &&
+            arg !== null &&
+            (arg as Record<string, unknown>).reason === 'BLOCKED_SSRF_TARGET' &&
+            (arg as Record<string, unknown>).detail === 'REDIRECT_NOT_ALLOWED'
+        )
+      );
+      expect(hasBlockedLog).toBe(true);
+    });
+
+    it('rejects custom/standard redirect error messages without cause object', async () => {
+      const redirectError = new Error('Redirect mode is set to error: unexpected redirect');
+
+      const mockFetch = vi.fn().mockRejectedValue(redirectError);
+      const mockScheduleRetry = vi.fn();
+      const msg = createMockMessage(validPayload);
+
+      await handleWebhookMessage(mockChannel, msg, {
+        fetchFn: mockFetch,
+        scheduleRetry: mockScheduleRetry
+      });
+
+      expect(mockScheduleRetry).not.toHaveBeenCalled();
+      expect(mockChannel.ack).toHaveBeenCalledWith(msg);
+      expect(webhookRepo.updateWebhookDelivery).toHaveBeenCalledWith(101, 'failed', null);
+    });
+  });
+
+  /* ------------------------------------------------------------------ */
+  /*  9. isRedirectError Helper Unit Tests                              */
+  /* ------------------------------------------------------------------ */
+
+  describe('9. isRedirectError Helper', () => {
+    it('correctly identifies various redirect errors', () => {
+      const errWithCause = new TypeError('fetch failed', {
+        cause: new Error('unexpected redirect')
+      });
+      expect(isRedirectError(errWithCause)).toBe(true);
+
+      expect(isRedirectError(new Error('Redirect not allowed'))).toBe(true);
+      expect(isRedirectError(new Error('HTTP redirect detected'))).toBe(true);
+      expect(isRedirectError('redirect failed')).toBe(true);
+    });
+
+    it('returns false for unrelated errors', () => {
+      expect(isRedirectError(new Error('ECONNREFUSED'))).toBe(false);
+      expect(isRedirectError(new Error('ETIMEDOUT'))).toBe(false);
+      expect(isRedirectError(new TypeError('Failed to fetch'))).toBe(false);
+      expect(isRedirectError(null)).toBe(false);
+      expect(isRedirectError(undefined)).toBe(false);
     });
   });
 });

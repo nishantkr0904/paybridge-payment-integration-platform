@@ -22,7 +22,8 @@ const envSchema = z.object({
   JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),
   CHECKOUT_ABANDONMENT_TIMEOUT_SECONDS: z.coerce.number().int().positive().default(900),
-  PAYBRIDGE_REAL_LLM_DEMO: z.string().optional().default('false')
+  PAYBRIDGE_REAL_LLM_DEMO: z.string().optional().default('false'),
+  WEBHOOK_ALLOWED_INTERNAL_TARGETS: z.string().optional().default('')
 });
 
 export const env = envSchema.parse(process.env);
