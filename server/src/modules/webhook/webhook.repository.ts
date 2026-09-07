@@ -31,3 +31,28 @@ export async function getWebhookDeliveries(merchantId: number, limit = 50): Prom
   );
   return rows as WebhookDelivery[];
 }
+
+export async function logWebhookDelivery(
+  endpointId: number,
+  eventType: string,
+  payload: Record<string, unknown>,
+  status: 'pending' | 'success' | 'failed',
+  responseStatus: number | null
+): Promise<number> {
+  const [result] = await pool.execute<ResultSetHeader>(
+    `INSERT INTO webhook_deliveries (endpoint_id, event_type, payload, status, response_status) VALUES (?, ?, ?, ?, ?)`,
+    [endpointId, eventType, JSON.stringify(payload), status, responseStatus]
+  );
+  return result.insertId;
+}
+
+export async function updateWebhookDelivery(
+  id: number,
+  status: 'success' | 'failed',
+  responseStatus: number | null
+): Promise<void> {
+  await pool.execute(
+    `UPDATE webhook_deliveries SET status = ?, response_status = ? WHERE id = ?`,
+    [status, responseStatus, id]
+  );
+}

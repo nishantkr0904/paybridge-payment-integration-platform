@@ -1,153 +1,217 @@
 import 'dotenv/config';
-import { logger } from '../utils/logger.js';
 import crypto from 'node:crypto';
+import type amqp from 'amqplib';
+import { logger } from '../utils/logger.js';
 import { getRabbitMQChannel, QUEUES } from '../infrastructure/rabbitmq.js';
-import { getWebhookEndpoints } from '../modules/webhook/webhook.repository.js';
-import { pool } from '../config/database.js';
+import {
+  getWebhookEndpoints,
+  logWebhookDelivery,
+  updateWebhookDelivery
+} from '../modules/webhook/webhook.repository.js';
 import { generateUlid } from '../utils/ulid.js';
-import type { ResultSetHeader } from 'mysql2';
 
-async function logDelivery(endpointId: number, eventType: string, payload: Record<string, unknown>, status: 'pending' | 'success' | 'failed', responseStatus: number | null): Promise<number> {
-  const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO webhook_deliveries (endpoint_id, event_type, payload, status, response_status) VALUES (?, ?, ?, ?, ?)`,
-    [endpointId, eventType, JSON.stringify(payload), status, responseStatus]
-  );
-  return result.insertId;
+export const MAX_WEBHOOK_RETRIES = 5;
+
+export interface WebhookChannel {
+  ack(message: amqp.Message, allUpTo?: boolean): void;
+  nack(message: amqp.Message, allUpTo?: boolean, requeue?: boolean): void;
+  publish(
+    exchange: string,
+    routingKey: string,
+    content: Buffer,
+    options?: amqp.Options.Publish
+  ): boolean;
 }
 
-async function updateDelivery(id: number, status: 'success' | 'failed', responseStatus: number | null) {
-  await pool.execute(
-    `UPDATE webhook_deliveries SET status = ?, response_status = ? WHERE id = ?`,
-    [status, responseStatus, id]
-  );
+export interface WebhookHandlerOptions {
+  fetchFn?: typeof fetch;
+  scheduleRetry?: (action: () => void, delayMs: number) => NodeJS.Timeout | unknown;
+  maxRetries?: number;
 }
 
-let webhookConsumerTag: string | null = null;
-let webhookChannel: import('amqplib').Channel | null = null;
-const activeWebhookJobs = new Set<Promise<void>>();
+export interface PendingWebhookRetry {
+  timer: NodeJS.Timeout;
+  action: () => void;
+}
 
-export async function stopWebhookWorker(): Promise<void> {
-  if (webhookChannel && webhookConsumerTag) {
-    logger.info({ consumerTag: webhookConsumerTag }, '[Webhook Worker] Cancelling consumer subscription');
-    try {
-      await webhookChannel.cancel(webhookConsumerTag);
-    } catch (err) {
-      logger.warn({ err }, '[Webhook Worker] Notice: error while cancelling consumer tag');
-    }
-    webhookConsumerTag = null;
-  }
+export const pendingWebhookRetries = new Set<PendingWebhookRetry>();
 
-  if (activeWebhookJobs.size > 0) {
+export function scheduleDelayedWebhookPublish(
+  action: () => void,
+  delayMs: number
+): NodeJS.Timeout {
+  const pending: PendingWebhookRetry = {
+    timer: null as unknown as NodeJS.Timeout,
+    action
+  };
+
+  pending.timer = setTimeout(() => {
+    pendingWebhookRetries.delete(pending);
+    action();
+  }, delayMs);
+
+  pendingWebhookRetries.add(pending);
+  return pending.timer;
+}
+
+export function flushPendingWebhookRetries(): void {
+  if (pendingWebhookRetries.size > 0) {
     logger.info(
-      { inFlightCount: activeWebhookJobs.size },
-      '[Webhook Worker] Waiting for in-flight webhook jobs to finish'
+      { count: pendingWebhookRetries.size },
+      '[Webhook Worker] Flushing pending retries immediately before shutdown'
     );
-    await Promise.allSettled(Array.from(activeWebhookJobs));
-    logger.info('[Webhook Worker] All in-flight webhook jobs finished');
+    for (const pending of pendingWebhookRetries) {
+      clearTimeout(pending.timer);
+      try {
+        pending.action();
+      } catch (err) {
+        logger.error({ err }, '[Webhook Worker] Error executing flushed pending retry');
+      }
+    }
+    pendingWebhookRetries.clear();
   }
 }
 
-export async function startWebhookWorker() {
-  const channel = await getRabbitMQChannel();
-  webhookChannel = channel;
-  logger.info(`Webhook worker listening on ${QUEUES.WEBHOOK_DELIVERY}`);
+export function clearPendingWebhookRetries(): void {
+  for (const pending of pendingWebhookRetries) {
+    clearTimeout(pending.timer);
+  }
+  pendingWebhookRetries.clear();
+}
 
-  await channel.prefetch(5);
+/* ------------------------------------------------------------------ */
+/*  Webhook Message Handler (Non-Blocking Retry / Observability)      */
+/* ------------------------------------------------------------------ */
 
-  const { consumerTag } = await channel.consume(QUEUES.WEBHOOK_DELIVERY, (msg) => {
-    if (!msg) return;
+export async function handleWebhookMessage(
+  channel: WebhookChannel,
+  msg: amqp.ConsumeMessage,
+  options?: WebhookHandlerOptions
+): Promise<void> {
+  const correlationId =
+    (msg.properties?.headers?.['x-correlation-id'] as string | undefined) ||
+    (msg.properties?.headers?.traceId as string | undefined) ||
+    msg.properties?.correlationId ||
+    generateUlid();
 
-    const jobPromise = (async () => {
-      const correlationId =
-        (msg.properties?.headers?.['x-correlation-id'] as string | undefined) ||
-        (msg.properties?.headers?.traceId as string | undefined) ||
-        msg.properties?.correlationId ||
-        generateUlid();
+  let payload: {
+    merchantId?: number;
+    eventType?: string;
+    data?: unknown;
+    retryCount?: number;
+    [key: string]: unknown;
+  };
 
-      let payload;
-      try {
-        payload = JSON.parse(msg.content.toString());
-      } catch (err) {
-        logger.error({ err, correlationId, traceId: correlationId }, '[Webhook Worker] Failed to parse message');
-        channel.ack(msg); // Malformed, just drop it
-        return;
-      }
+  try {
+    payload = JSON.parse(msg.content.toString());
+  } catch (err) {
+    logger.error(
+      { err, correlationId, traceId: correlationId },
+      '[Webhook Worker] Failed to parse message, dropping malformed payload'
+    );
+    channel.ack(msg);
+    return;
+  }
 
-      const { merchantId, eventType, data, retryCount = 0 } = payload;
-      const MAX_RETRIES = 5;
+  const { merchantId, eventType, data, retryCount = 0 } = payload;
+  const maxRetries = options?.maxRetries ?? MAX_WEBHOOK_RETRIES;
 
-      const workerLogger = logger.child({
-        correlationId,
-        traceId: correlationId,
-        merchantId
+  if (typeof merchantId !== 'number' || !eventType) {
+    logger.error(
+      { payload, correlationId },
+      '[Webhook Worker] Missing required merchantId or eventType, dropping message'
+    );
+    channel.ack(msg);
+    return;
+  }
+
+  const workerLogger = logger.child({
+    correlationId,
+    traceId: correlationId,
+    merchantId
+  });
+
+  workerLogger.info(
+    `[Webhook Worker] Delivering ${eventType} to merchant ${merchantId} (Attempt ${retryCount + 1}/${maxRetries + 1})`
+  );
+
+  try {
+    const endpoints = await getWebhookEndpoints(merchantId);
+    const activeEndpoint = endpoints.find((e) => e.isActive);
+
+    if (!activeEndpoint) {
+      workerLogger.info(
+        `[Webhook Worker] No active webhook endpoint found for merchant ${merchantId}. Skipping.`
+      );
+      channel.ack(msg);
+      return;
+    }
+
+    const payloadToSend = {
+      id: `evt_${crypto.randomBytes(12).toString('hex')}`,
+      type: eventType,
+      created: new Date().toISOString(),
+      data
+    };
+
+    const payloadString = JSON.stringify(payloadToSend);
+    const signature = crypto
+      .createHmac('sha256', activeEndpoint.secret)
+      .update(payloadString)
+      .digest('hex');
+
+    const deliveryId = await logWebhookDelivery(
+      activeEndpoint.id,
+      eventType,
+      payloadToSend,
+      'pending',
+      null
+    );
+
+    const fetchImpl = options?.fetchFn ?? fetch;
+
+    try {
+      const response = await fetchImpl(activeEndpoint.url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-paybridge-signature': signature,
+          'User-Agent': 'PayBridge-Webhook/1.0'
+        },
+        body: payloadString,
+        signal: AbortSignal.timeout(5000)
       });
 
-      workerLogger.info(`[Webhook Worker] Delivering ${eventType} to merchant ${merchantId} (Attempt ${retryCount + 1}/${MAX_RETRIES + 1})`);
+      const isSuccess = response.status >= 200 && response.status < 300;
+      await updateWebhookDelivery(deliveryId, isSuccess ? 'success' : 'failed', response.status);
 
-      try {
-        // Find active webhook endpoint for merchant
-        const endpoints = await getWebhookEndpoints(merchantId);
-        const activeEndpoint = endpoints.find(e => e.isActive);
+      if (isSuccess) {
+        workerLogger.info(`[Webhook Worker] Delivery successful. HTTP ${response.status}`);
+        channel.ack(msg);
+        return;
+      } else {
+        throw new Error(`Non-success HTTP status ${response.status}`);
+      }
+    } catch (deliveryError) {
+      workerLogger.error({ err: deliveryError }, `[Webhook Worker] Delivery failed`);
+      await updateWebhookDelivery(deliveryId, 'failed', null).catch(() => {});
+      throw deliveryError;
+    }
+  } catch {
+    if (retryCount < maxRetries) {
+      const backoffMs = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s, 8s, 16s
+      workerLogger.info(
+        `[Webhook Worker] Scheduling non-blocking retry in ${backoffMs}ms (Attempt ${retryCount + 1}/${maxRetries})...`
+      );
 
-        if (!activeEndpoint) {
-          workerLogger.info(`[Webhook Worker] No active webhook endpoint found for merchant ${merchantId}. Skipping.`);
-          channel.ack(msg);
-          return;
-        }
+      // Immediately acknowledge the current message so the worker prefetch slot is freed
+      channel.ack(msg);
 
-        // Prepare payload to send
-        const payloadToSend = {
-          id: `evt_${crypto.randomBytes(12).toString('hex')}`,
-          type: eventType,
-          created: new Date().toISOString(),
-          data
-        };
+      const newPayload = { ...payload, retryCount: retryCount + 1 };
+      const scheduleFn = options?.scheduleRetry ?? scheduleDelayedWebhookPublish;
 
-        const payloadString = JSON.stringify(payloadToSend);
-        const signature = crypto.createHmac('sha256', activeEndpoint.secret).update(payloadString).digest('hex');
-
-        // Log pending delivery
-        const deliveryId = await logDelivery(activeEndpoint.id, eventType, payloadToSend, 'pending', null);
-
+      scheduleFn(() => {
         try {
-          const response = await fetch(activeEndpoint.url, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-paybridge-signature': signature,
-              'User-Agent': 'PayBridge-Webhook/1.0'
-            },
-            body: payloadString,
-            // Timeout after 5 seconds
-            signal: AbortSignal.timeout(5000)
-          });
-
-          const isSuccess = response.status >= 200 && response.status < 300;
-
-          await updateDelivery(deliveryId, isSuccess ? 'success' : 'failed', response.status);
-
-          if (isSuccess) {
-            workerLogger.info(`[Webhook Worker] Delivery successful. HTTP ${response.status}`);
-            channel.ack(msg);
-          } else {
-            throw new Error(`Non-success HTTP status ${response.status}`);
-          }
-        } catch (deliveryError) {
-          // Network error, timeout, or 500 status code
-          workerLogger.error({ err: deliveryError }, `[Webhook Worker] Delivery failed`);
-
-          // Ensure DB is updated to reflect failure if not already updated
-          await updateDelivery(deliveryId, 'failed', null);
-          throw deliveryError;
-        }
-      } catch {
-        if (retryCount < MAX_RETRIES) {
-          const backoffMs = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s, 8s, 16s
-          workerLogger.info(`[Webhook Worker] Retrying in ${backoffMs}ms...`);
-
-          await new Promise((resolve) => setTimeout(resolve, backoffMs));
-
-          const newPayload = { ...payload, retryCount: retryCount + 1 };
           channel.publish(
             '',
             QUEUES.WEBHOOK_DELIVERY,
@@ -161,26 +225,85 @@ export async function startWebhookWorker() {
               correlationId
             }
           );
-
-          channel.ack(msg);
-        } else {
-          workerLogger.error(`[Webhook Worker] Max retries reached for webhook delivery.`);
-          channel.ack(msg); // Drop after max retries
+          workerLogger.info(
+            `[Webhook Worker] Delayed retry message dispatched to queue (Attempt ${retryCount + 2})`
+          );
+        } catch (pubErr) {
+          workerLogger.error(
+            { err: pubErr },
+            '[Webhook Worker] Failed to publish delayed retry message'
+          );
         }
-      }
-    })();
+      }, backoffMs);
+    } else {
+      workerLogger.error(`[Webhook Worker] Max retries (${maxRetries}) reached for webhook delivery.`);
+      channel.ack(msg); // Drop after max retries
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Worker Lifecycle & Graceful Shutdown Integration                  */
+/* ------------------------------------------------------------------ */
+
+let webhookConsumerTag: string | null = null;
+let webhookChannel: amqp.Channel | null = null;
+const activeWebhookJobs = new Set<Promise<void>>();
+
+export async function stopWebhookWorker(): Promise<void> {
+  if (webhookChannel && webhookConsumerTag) {
+    logger.info({ consumerTag: webhookConsumerTag }, '[Webhook Worker] Cancelling consumer subscription');
+    try {
+      await webhookChannel.cancel(webhookConsumerTag);
+    } catch (err) {
+      logger.warn({ err }, '[Webhook Worker] Notice: error while cancelling consumer tag');
+    }
+    webhookConsumerTag = null;
+  }
+
+  // Flush pending retries to RabbitMQ so no delivery attempts are lost across process restarts
+  flushPendingWebhookRetries();
+
+  if (activeWebhookJobs.size > 0) {
+    logger.info(
+      { inFlightCount: activeWebhookJobs.size },
+      '[Webhook Worker] Waiting for in-flight webhook jobs to finish'
+    );
+    await Promise.allSettled(Array.from(activeWebhookJobs));
+    logger.info('[Webhook Worker] All in-flight webhook jobs finished');
+  }
+}
+
+export async function startWebhookWorker(customChannel?: amqp.Channel) {
+  const channel = customChannel || (await getRabbitMQChannel());
+  webhookChannel = channel;
+  logger.info(`Webhook worker listening on ${QUEUES.WEBHOOK_DELIVERY}`);
+
+  await channel.prefetch(5);
+
+  const { consumerTag } = await channel.consume(QUEUES.WEBHOOK_DELIVERY, (msg) => {
+    if (!msg) return;
+
+    const jobPromise = handleWebhookMessage(channel, msg)
+      .catch((err) => {
+        logger.error({ err }, '[Webhook Worker] Unhandled exception in handleWebhookMessage');
+      })
+      .finally(() => {
+        activeWebhookJobs.delete(jobPromise);
+      });
 
     activeWebhookJobs.add(jobPromise);
-    jobPromise.finally(() => {
-      activeWebhookJobs.delete(jobPromise);
-    });
   });
 
   webhookConsumerTag = consumerTag;
   return { consumerTag, channel };
 }
 
-if (process.argv[1] && (process.argv[1].endsWith('webhook.worker.ts') || process.argv[1].endsWith('webhook.worker.js'))) {
+// If run directly via node/tsx
+if (
+  process.argv[1] &&
+  (process.argv[1].endsWith('webhook.worker.ts') || process.argv[1].endsWith('webhook.worker.js'))
+) {
   import('../utils/shutdown.js').then(({ createWorkerShutdownHandler }) => {
     startWebhookWorker()
       .then(() => {
