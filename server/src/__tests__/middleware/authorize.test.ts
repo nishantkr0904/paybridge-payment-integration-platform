@@ -560,6 +560,102 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
       expect(platformPermissions).not.toContain('payment:create');
     });
 
+    it('fails explicitly with HttpError (ROLE_NOT_FOUND) when createMerchantUser is called with nonexistent role and rolls back user creation (P1-2)', async () => {
+      const { createMerchantUser, findUserByEmail } = await import(
+        '../../modules/auth/auth.repository.js'
+      );
+      const email = `auth_test_nonexistent_role_${Date.now()}@example.com`;
+
+      await expect(
+        createMerchantUser({
+          email,
+          passwordHash: 'hashed_pw',
+          merchantName: 'Invalid Role Merchant',
+          role: 'nonexistent_role'
+        })
+      ).rejects.toThrow(HttpError);
+
+      await expect(
+        createMerchantUser({
+          email,
+          passwordHash: 'hashed_pw',
+          merchantName: 'Invalid Role Merchant',
+          role: 'nonexistent_role'
+        })
+      ).rejects.toMatchObject({
+        statusCode: 404,
+        code: 'ROLE_NOT_FOUND'
+      });
+
+      // Assert user was NOT created in database (rolled back)
+      const found = await findUserByEmail(email);
+      expect(found).toBeNull();
+    });
+
+    it('fails explicitly with HttpError (ROLE_NOT_FOUND) when assignUserRole is called with nonexistent role (P1-2)', async () => {
+      const { createMerchantUser, assignUserRole, findUserRoles } = await import(
+        '../../modules/auth/auth.repository.js'
+      );
+      const email = `auth_test_assign_invalid_${Date.now()}@example.com`;
+      const user = await createMerchantUser({
+        email,
+        passwordHash: 'hashed_pw',
+        merchantName: 'Assign Test Merchant',
+        role: 'merchant'
+      });
+
+      try {
+        await expect(
+          assignUserRole(user.id, 'completely_bogus_role')
+        ).rejects.toThrow(HttpError);
+
+        await expect(
+          assignUserRole(user.id, 'completely_bogus_role')
+        ).rejects.toMatchObject({
+          statusCode: 404,
+          code: 'ROLE_NOT_FOUND'
+        });
+
+        // Assert user roles remain unchanged
+        const roles = await findUserRoles(user.id);
+        expect(roles).toEqual(['merchant']);
+      } finally {
+        const { pool } = await import('../../config/database.js');
+        await pool.query('DELETE FROM users WHERE id = ?', [user.id]);
+      }
+    });
+
+    it('preserves duplicate-assignment idempotency and distinguishes already-assigned role from nonexistent role (P1-2)', async () => {
+      const { createMerchantUser, assignUserRole, findUserRoles } = await import(
+        '../../modules/auth/auth.repository.js'
+      );
+      const email = `auth_test_dup_role_${Date.now()}@example.com`;
+      const user = await createMerchantUser({
+        email,
+        passwordHash: 'hashed_pw',
+        merchantName: 'Dup Role Merchant',
+        role: 'merchant_operator'
+      });
+
+      try {
+        // First assignment of finance_analyst
+        await assignUserRole(user.id, 'finance_analyst');
+        let roles = await findUserRoles(user.id);
+        expect(roles).toContain('merchant_operator');
+        expect(roles).toContain('finance_analyst');
+
+        // Duplicate assignment of finance_analyst should NOT throw (preserves duplicate-assignment behavior)
+        await expect(assignUserRole(user.id, 'finance_analyst')).resolves.not.toThrow();
+
+        // Roles should still have each role once
+        roles = await findUserRoles(user.id);
+        expect(roles.filter((r) => r === 'finance_analyst')).toHaveLength(1);
+      } finally {
+        const { pool } = await import('../../config/database.js');
+        await pool.query('DELETE FROM users WHERE id = ?', [user.id]);
+      }
+    });
+
     it('safely reassigns user_roles to fallback merchant role when rolling back migration 007 and allows clean reapplication (P1-1)', async () => {
       const {
         runMigrations,

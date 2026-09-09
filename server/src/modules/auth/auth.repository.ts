@@ -1,6 +1,7 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { pool } from '../../config/database.js';
 import type { AuthUser, Role } from '../../types/auth.js';
+import { HttpError } from '../../utils/http-error.js';
 
 type UserRow = RowDataPacket & {
   id: number;
@@ -59,7 +60,7 @@ export async function createMerchantUser(input: {
   email: string;
   passwordHash: string;
   merchantName: string;
-  role?: Role;
+  role?: Role | string;
 }): Promise<AuthUser> {
   const connection = await pool.getConnection();
 
@@ -73,11 +74,15 @@ export async function createMerchantUser(input: {
     );
 
     const roleName = input.role || 'merchant';
-    await connection.query(
+    const [roleResult] = await connection.query<ResultSetHeader>(
       `INSERT INTO user_roles (user_id, role_id)
        SELECT :userId, id FROM roles WHERE name = :roleName`,
       { userId: result.insertId, roleName }
     );
+
+    if (roleResult.affectedRows === 0) {
+      throw new HttpError(404, 'ROLE_NOT_FOUND', `Role '${roleName}' does not exist.`);
+    }
 
     await connection.commit();
 
@@ -95,12 +100,23 @@ export async function createMerchantUser(input: {
   }
 }
 
-export async function assignUserRole(userId: number, roleName: string): Promise<void> {
-  await pool.query(
+export async function assignUserRole(userId: number, roleName: Role | string): Promise<void> {
+  const [result] = await pool.query<ResultSetHeader>(
     `INSERT IGNORE INTO user_roles (user_id, role_id)
      SELECT :userId, id FROM roles WHERE name = :roleName`,
     { userId, roleName }
   );
+
+  if (result.affectedRows === 0) {
+    const [roleRows] = await pool.query<(RowDataPacket & { id: number })[]>(
+      `SELECT id FROM roles WHERE name = :roleName`,
+      { roleName }
+    );
+
+    if (roleRows.length === 0) {
+      throw new HttpError(404, 'ROLE_NOT_FOUND', `Role '${roleName}' does not exist.`);
+    }
+  }
 }
 
 export async function findUserRoles(userId: number): Promise<string[]> {
