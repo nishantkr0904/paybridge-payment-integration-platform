@@ -22,6 +22,7 @@ describe('TASK-305: Agent Reasoning Trace & Audit Capture (AI-007 / AUD-002 / OB
   let server: Server;
   let baseUrl: string;
   let merchantToken: string;
+  let operatorToken: string;
   let merchantId: number;
   let caseId: number;
 
@@ -39,6 +40,13 @@ describe('TASK-305: Agent Reasoning Trace & Audit Capture (AI-007 / AUD-002 / OB
       email: merchantEmail,
       roles: ['merchant'],
       merchantName: 'Trace Merchant'
+    });
+
+    operatorToken = signAccessToken({
+      id: 999990,
+      email: 'operator@paybridge.internal',
+      roles: ['platform_operator'],
+      merchantName: 'PayBridge Platform'
     });
 
     const [oResult] = await pool.query<ResultSetHeader>(
@@ -349,7 +357,7 @@ describe('TASK-305: Agent Reasoning Trace & Audit Capture (AI-007 / AUD-002 / OB
       const { trace } = await executeDiagnosisWithTrace({ context }, mockProvider, merchantId, caseId);
 
       const res = await fetch(`${baseUrl}/api/v1/ops/agent-traces/${trace.traceRef}`, {
-        headers: { Authorization: `Bearer ${merchantToken}` }
+        headers: { Authorization: `Bearer ${operatorToken}` }
       });
 
       expect(res.status).toBe(200);
@@ -360,6 +368,13 @@ describe('TASK-305: Agent Reasoning Trace & Audit Capture (AI-007 / AUD-002 / OB
       expect(data.totalDurationMs).toBeDefined();
     });
 
+    it('GET /api/v1/ops/agent-traces/:traceRef returns 403 when accessed by merchant role', async () => {
+      const res = await fetch(`${baseUrl}/api/v1/ops/agent-traces/01NONEXISTENTTRACE0000000`, {
+        headers: { Authorization: `Bearer ${merchantToken}` }
+      });
+      expect(res.status).toBe(403);
+    });
+
     it('POST /api/v1/ops/agent-traces/:traceRef/replay triggers deterministic replay via HTTP', async () => {
       const mockProvider = new MockLLMProvider();
       const context = await buildRecoveryContext({ caseId, merchantId });
@@ -367,7 +382,7 @@ describe('TASK-305: Agent Reasoning Trace & Audit Capture (AI-007 / AUD-002 / OB
 
       const res = await fetch(`${baseUrl}/api/v1/ops/agent-traces/${trace.traceRef}/replay`, {
         method: 'POST',
-        headers: { Authorization: `Bearer ${merchantToken}` }
+        headers: { Authorization: `Bearer ${operatorToken}` }
       });
 
       expect(res.status).toBe(200);
@@ -429,7 +444,7 @@ describe('TASK-305: Agent Reasoning Trace & Audit Capture (AI-007 / AUD-002 / OB
 
     it('GET /api/v1/ops/agent-traces/:traceRef returns 404 for unknown trace', async () => {
       const res = await fetch(`${baseUrl}/api/v1/ops/agent-traces/01NONEXISTENTTRACE0000000`, {
-        headers: { Authorization: `Bearer ${merchantToken}` }
+        headers: { Authorization: `Bearer ${operatorToken}` }
       });
       expect(res.status).toBe(404);
       const data = await res.json();

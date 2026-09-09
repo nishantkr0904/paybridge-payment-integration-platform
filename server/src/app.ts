@@ -69,7 +69,6 @@ export function createApp() {
   app.use('/api/recovery', caseRouter);
   app.use('/api/audit', auditRouter);
   app.use('/api/v1/ops/agent-traces', traceRouter);
-  app.use('/api/ai/traces', traceRouter);
 
   // Swagger Documentation
   const openApiPath = fs.existsSync(path.join(process.cwd(), 'docs/openapi.yaml'))
