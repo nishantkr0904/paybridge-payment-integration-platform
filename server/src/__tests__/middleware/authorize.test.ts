@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 import express from 'express';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import type { RowDataPacket } from 'mysql2/promise';
 import {
   hasPermission,
   hasRole,
@@ -497,6 +498,9 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
       } finally {
         conn.release();
       }
+
+      const { runMigrations, getDefaultMigrationsDir } = await import('../../infrastructure/migrator.js');
+      await runMigrations({ migrationsDir: getDefaultMigrationsDir() });
     });
 
     it('creates merchant user with default legacy merchant role', async () => {
@@ -554,6 +558,146 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
         expect.arrayContaining(['ops:trace:read', 'ops:trace:replay', 'ops:shed:execute'])
       );
       expect(platformPermissions).not.toContain('payment:create');
+    });
+
+    it('safely reassigns user_roles to fallback merchant role when rolling back migration 007 and allows clean reapplication (P1-1)', async () => {
+      const {
+        runMigrations,
+        rollbackMigrations,
+        getMigrationStatus,
+        getDefaultMigrationsDir
+      } = await import('../../infrastructure/migrator.js');
+      const {
+        createMerchantUser,
+        assignUserRole,
+        findUserRoles,
+        findPermissionsByRole
+      } = await import('../../modules/auth/auth.repository.js');
+      const { pool } = await import('../../config/database.js');
+
+      const migrationsDir = getDefaultMigrationsDir();
+
+      // Ensure all migrations up to 007 are applied
+      await runMigrations({ migrationsDir });
+
+      // Create test users with various role configurations:
+      // 1. User with only a new RBAC role ('merchant_operator')
+      const userOnlyOp = await createMerchantUser({
+        email: `rollback_test_op_${Date.now()}@example.com`,
+        passwordHash: 'hash1',
+        merchantName: 'Rollback Op Merchant',
+        role: 'merchant_operator'
+      });
+
+      // 2. User with legacy 'merchant' AND a new RBAC role ('merchant_developer')
+      const userMixed = await createMerchantUser({
+        email: `rollback_test_mixed_${Date.now()}@example.com`,
+        passwordHash: 'hash2',
+        merchantName: 'Rollback Mixed Merchant',
+        role: 'merchant'
+      });
+      await assignUserRole(userMixed.id, 'merchant_developer');
+
+      // 3. User with multiple new RBAC roles ('finance_analyst' and 'risk_compliance_reviewer')
+      const userMulti = await createMerchantUser({
+        email: `rollback_test_multi_${Date.now()}@example.com`,
+        passwordHash: 'hash3',
+        merchantName: 'Rollback Multi Merchant',
+        role: 'finance_analyst'
+      });
+      await assignUserRole(userMulti.id, 'risk_compliance_reviewer');
+
+      const conn = await pool.getConnection();
+      try {
+        // Verify initial roles before rollback
+        expect(await findUserRoles(userOnlyOp.id)).toEqual(['merchant_operator']);
+        expect(await findUserRoles(userMixed.id)).toEqual(
+          expect.arrayContaining(['merchant', 'merchant_developer'])
+        );
+        expect(await findUserRoles(userMulti.id)).toEqual(
+          expect.arrayContaining(['finance_analyst', 'risk_compliance_reviewer'])
+        );
+
+        // Execute rollback of migration 007 (to version 6)
+        const rollbackResult = await rollbackMigrations({ migrationsDir, to: 6 });
+        expect(rollbackResult.some((r) => r.version === 7)).toBe(true);
+
+        // Verify status shows migration 007 as PENDING
+        const statusAfterRollback = await getMigrationStatus({ migrationsDir });
+        const mig7Status = statusAfterRollback.migrations.find((m) => m.version === 7);
+        expect(mig7Status?.status).toBe('PENDING');
+
+        // Verify permissions and role_permissions tables are dropped
+        const [tables] = await conn.query<RowDataPacket[]>(`
+          SELECT TABLE_NAME
+          FROM information_schema.tables
+          WHERE table_schema = DATABASE()
+            AND table_name IN ('permissions', 'role_permissions')
+        `);
+        expect(tables.length).toBe(0);
+
+        // Verify the 6 new roles were removed from roles table
+        const [roles] = await conn.query<RowDataPacket[]>(`
+          SELECT name FROM roles WHERE name IN (
+            'merchant_admin', 'merchant_operator', 'merchant_developer',
+            'finance_analyst', 'risk_compliance_reviewer', 'platform_operator'
+          )
+        `);
+        expect(roles.length).toBe(0);
+
+        // Verify the legacy 'merchant' role is still present
+        const [legacyRole] = await conn.query<RowDataPacket[]>(`
+          SELECT name FROM roles WHERE name = 'merchant'
+        `);
+        expect(legacyRole.length).toBe(1);
+
+        // CRITICAL P1-1 ASSERTION:
+        // Verify user_roles were preserved by reassigning to fallback 'merchant' role
+        // No user should be left with empty roles!
+        const opRolesAfterRollback = await findUserRoles(userOnlyOp.id);
+        expect(opRolesAfterRollback).toEqual(['merchant']);
+
+        const mixedRolesAfterRollback = await findUserRoles(userMixed.id);
+        expect(mixedRolesAfterRollback).toEqual(['merchant']);
+
+        const multiRolesAfterRollback = await findUserRoles(userMulti.id);
+        expect(multiRolesAfterRollback).toEqual(['merchant']);
+
+        // Reapply migration 007
+        const reapplyResult = await runMigrations({ migrationsDir });
+        expect(reapplyResult.some((r) => r.version === 7)).toBe(true);
+
+        // Verify status after reapplication is clean
+        const finalStatus = await getMigrationStatus({ migrationsDir });
+        expect(finalStatus.pendingCount).toBe(0);
+        expect(finalStatus.hasMismatch).toBe(false);
+
+        // Verify tables and seeded permissions exist again
+        const reapplyOpPermissions = await findPermissionsByRole('merchant_operator');
+        expect(reapplyOpPermissions).toContain('recovery:approve');
+
+        // Verify users still retain their valid fallback role and can have new roles assigned again
+        expect(await findUserRoles(userOnlyOp.id)).toEqual(['merchant']);
+        await assignUserRole(userOnlyOp.id, 'merchant_operator');
+        expect(await findUserRoles(userOnlyOp.id)).toEqual(
+          expect.arrayContaining(['merchant', 'merchant_operator'])
+        );
+      } finally {
+        // Ensure migration 007 is reapplied even if an assertion failed
+        await runMigrations({ migrationsDir });
+
+        // Cleanup test users
+        try {
+          await conn.query('DELETE FROM users WHERE id IN (?, ?, ?)', [
+            userOnlyOp.id,
+            userMixed.id,
+            userMulti.id
+          ]);
+        } catch {
+          // ignore cleanup error
+        }
+        conn.release();
+      }
     });
   });
 });
