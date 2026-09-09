@@ -522,5 +522,112 @@ describe('TASK-204: Case Prioritisation Queue & Recoverable Revenue Ledger (RCV-
       const res = await fetch(`${baseUrl}/api/merchants/recovery/ledger`);
       expect(res.status).toBe(401);
     });
+
+    it('POST /api/merchants/recovery/shed strictly isolates load shedding to authenticated merchant (P1-3)', async () => {
+      const conn = await pool.getConnection();
+      try {
+        // 1. Create extra active cases for Merchant 1 and Merchant 2
+        const [so1] = await conn.query<RowDataPacket[] & { insertId: number }>(
+          `INSERT INTO orders (merchant_id, order_ref, amount, currency, status) VALUES (?, '01SHEDM1ORD000000000000001', 30000, 'INR', 'failed')`,
+          [merchant1Id]
+        );
+        const shedOrder1Id = (so1 as unknown as { insertId: number }).insertId;
+
+        const [st1] = await conn.query<RowDataPacket[] & { insertId: number }>(
+          `INSERT INTO transactions (order_id, txn_ref, amount, status, payment_method) VALUES (?, '01SHEDM1TXN000000000000001', 30000, 'failed', 'upi')`,
+          [shedOrder1Id]
+        );
+        const shedTxn1Id = (st1 as unknown as { insertId: number }).insertId;
+
+        const [so2] = await conn.query<RowDataPacket[] & { insertId: number }>(
+          `INSERT INTO orders (merchant_id, order_ref, amount, currency, status) VALUES (?, '01SHEDM2ORD000000000000002', 40000, 'INR', 'failed')`,
+          [merchant2Id]
+        );
+        const shedOrder2Id = (so2 as unknown as { insertId: number }).insertId;
+
+        const [st2] = await conn.query<RowDataPacket[] & { insertId: number }>(
+          `INSERT INTO transactions (order_id, txn_ref, amount, status, payment_method) VALUES (?, '01SHEDM2TXN000000000000002', 40000, 'failed', 'card')`,
+          [shedOrder2Id]
+        );
+        const shedTxn2Id = (st2 as unknown as { insertId: number }).insertId;
+
+        // Ingest payment failures to create active cases for both merchants
+        const { case: m1Case } = await ingestPaymentFailure({
+          eventType: 'payment.failed',
+          merchantId: merchant1Id,
+          orderId: shedOrder1Id,
+          transactionId: shedTxn1Id,
+          amount: 30000,
+          currency: 'INR',
+          failureCategory: 'UNKNOWN',
+          correlationId: '01SHEDM1CORR00000000000001'
+        });
+
+        const { case: m2Case } = await ingestPaymentFailure({
+          eventType: 'payment.failed',
+          merchantId: merchant2Id,
+          orderId: shedOrder2Id,
+          transactionId: shedTxn2Id,
+          amount: 40000,
+          currency: 'INR',
+          failureCategory: 'UNKNOWN',
+          correlationId: '01SHEDM2CORR00000000000002'
+        });
+
+        expect(m1Case.status).toBe('detected');
+        expect(m2Case.status).toBe('detected');
+
+        // Record active cases before shedding
+        const m1ActiveBefore = await findActiveCases(merchant1Id);
+        const m2ActiveBefore = await findActiveCases(merchant2Id);
+        expect(m1ActiveBefore.length).toBeGreaterThanOrEqual(1);
+        expect(m2ActiveBefore.length).toBeGreaterThanOrEqual(1);
+
+        // Merchant 1 invokes POST /api/merchants/recovery/shed with capacityLimit = 0
+        // Demands shedding ALL active cases for Merchant 1
+        const res = await fetch(`${baseUrl}/api/merchants/recovery/shed`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token1}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ capacityLimit: 0 })
+        });
+
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { shedCases: RecoveryCase[]; shedCount: number };
+
+        // Verify that only Merchant 1 cases were shed
+        expect(body.shedCount).toBe(m1ActiveBefore.length);
+        for (const shedCase of body.shedCases) {
+          expect(shedCase.merchantId).toBe(merchant1Id);
+          expect(shedCase.status).toBe('suppressed');
+        }
+
+        // Verify Merchant 1 now has 0 active cases
+        const m1ActiveAfter = await findActiveCases(merchant1Id);
+        expect(m1ActiveAfter.length).toBe(0);
+
+        // CRITICAL INVARIANT: Merchant 2 active cases must remain 100% untouched!
+        const m2ActiveAfter = await findActiveCases(merchant2Id);
+        expect(m2ActiveAfter.length).toBe(m2ActiveBefore.length);
+
+        // Verify Merchant 2's case is still active and unchanged
+        const m2CaseInDb = m2ActiveAfter.find((c) => c.id === m2Case.id);
+        expect(m2CaseInDb).toBeDefined();
+        expect(m2CaseInDb?.status).toBe('detected');
+
+        // Also verify direct service call with merchantId explicitly scopes shedding
+        const serviceShed = await shedExcessBacklog(0, '01SHEDSRVM200000000000001', merchant2Id);
+        expect(serviceShed.shedCount).toBe(m2ActiveAfter.length);
+        for (const sc of serviceShed.shedCases) {
+          expect(sc.merchantId).toBe(merchant2Id);
+        }
+        const m2ActiveFinal = await findActiveCases(merchant2Id);
+        expect(m2ActiveFinal.length).toBe(0);
+      } finally {
+        conn.release();
+      }
+    });
   });
 });

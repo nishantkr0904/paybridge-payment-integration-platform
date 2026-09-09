@@ -293,7 +293,8 @@ merchantRouter.post('/recovery/shed', async (req, res, next) => {
     const input = loadShedSchema.parse(req.body);
     const result = await (await import('../recovery/case.service.js')).shedExcessBacklog(
       input.capacityLimit,
-      req.id?.toString()
+      req.id?.toString(),
+      req.user!.id
     );
     res.json(result);
   } catch (error) {

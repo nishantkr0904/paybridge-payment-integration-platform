@@ -220,10 +220,11 @@ export async function getPrioritizedQueue(
  */
 export async function shedExcessBacklog(
   capacityLimit: number,
-  correlationId?: string
+  correlationId?: string,
+  merchantId?: number
 ): Promise<{ shedCases: RecoveryCase[]; shedCount: number }> {
   const effectiveCorrelationId = correlationId || generateUlid();
-  const allActive = await findActiveCases();
+  const allActive = await findActiveCases(merchantId);
 
   if (allActive.length <= capacityLimit) {
     return { shedCases: [], shedCount: 0 };
@@ -261,6 +262,7 @@ export async function shedExcessBacklog(
       shedCount: shedCases.length,
       capacityLimit,
       initialActiveCount: allActive.length,
+      merchantId,
       correlationId: effectiveCorrelationId
     },
     `[Recovery Prioritizer] Load shedding executed: explicitly suppressed ${shedCases.length} low-priority cases under capacity pressure`
