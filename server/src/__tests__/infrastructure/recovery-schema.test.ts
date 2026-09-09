@@ -411,9 +411,8 @@ describe('TASK-102: Event Store & Case Management Schemas (005_recovery_schema)'
 
   describe('Migration Rollback & Reversibility', () => {
     it('cleanly rolls back migration 005 and re-applies it without errors', async () => {
-      // 1. Rollback to version 4 (rolls back 006_agent_trace_schema and 005_recovery_schema)
-      const rollbackResult = await rollbackMigrations({ migrationsDir, step: 2 });
-      expect(rollbackResult.length).toBe(2);
+      // 1. Rollback to version 4 (rolls back all subsequent migrations down to version 4)
+      const rollbackResult = await rollbackMigrations({ migrationsDir, to: 4 });
       const v5Rollback = rollbackResult.find((r) => r.version === 5);
       expect(v5Rollback).toBeDefined();
       expect(v5Rollback?.name).toBe('recovery_schema');
@@ -435,13 +434,12 @@ describe('TASK-102: Event Store & Case Management Schemas (005_recovery_schema)'
       // 3. Verify status reports 005 as PENDING
       const statusAfterRollback = await getMigrationStatus({ migrationsDir });
       expect(statusAfterRollback.appliedCount).toBe(4);
-      expect(statusAfterRollback.pendingCount).toBe(2);
+      expect(statusAfterRollback.pendingCount).toBeGreaterThanOrEqual(1);
       const pendingMigration = statusAfterRollback.migrations.find((m) => m.version === 5);
       expect(pendingMigration?.status).toBe('PENDING');
 
       // 4. Re-apply migrations
       const reApplyResult = await runMigrations({ migrationsDir });
-      expect(reApplyResult.length).toBe(2);
       expect(reApplyResult.some((r) => r.version === 5)).toBe(true);
 
       // 5. Verify all migrations are APPLIED

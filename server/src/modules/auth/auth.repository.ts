@@ -1,6 +1,6 @@
 import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import { pool } from '../../config/database.js';
-import type { AuthUser } from '../../types/auth.js';
+import type { AuthUser, Role } from '../../types/auth.js';
 
 type UserRow = RowDataPacket & {
   id: number;
@@ -59,6 +59,7 @@ export async function createMerchantUser(input: {
   email: string;
   passwordHash: string;
   merchantName: string;
+  role?: Role;
 }): Promise<AuthUser> {
   const connection = await pool.getConnection();
 
@@ -71,10 +72,11 @@ export async function createMerchantUser(input: {
       input
     );
 
+    const roleName = input.role || 'merchant';
     await connection.query(
       `INSERT INTO user_roles (user_id, role_id)
-       SELECT :userId, id FROM roles WHERE name = 'merchant'`,
-      { userId: result.insertId }
+       SELECT :userId, id FROM roles WHERE name = :roleName`,
+      { userId: result.insertId, roleName }
     );
 
     await connection.commit();
@@ -83,7 +85,7 @@ export async function createMerchantUser(input: {
       id: result.insertId,
       email: input.email,
       merchantName: input.merchantName,
-      roles: ['merchant']
+      roles: [roleName]
     };
   } catch (error) {
     await connection.rollback();
@@ -91,6 +93,39 @@ export async function createMerchantUser(input: {
   } finally {
     connection.release();
   }
+}
+
+export async function assignUserRole(userId: number, roleName: string): Promise<void> {
+  await pool.query(
+    `INSERT IGNORE INTO user_roles (user_id, role_id)
+     SELECT :userId, id FROM roles WHERE name = :roleName`,
+    { userId, roleName }
+  );
+}
+
+export async function findUserRoles(userId: number): Promise<string[]> {
+  const [rows] = await pool.query<(RowDataPacket & { name: string })[]>(
+    `SELECT r.name
+     FROM roles r
+     JOIN user_roles ur ON ur.role_id = r.id
+     WHERE ur.user_id = :userId`,
+    { userId }
+  );
+
+  return rows.map((r) => r.name);
+}
+
+export async function findPermissionsByRole(roleName: string): Promise<string[]> {
+  const [rows] = await pool.query<(RowDataPacket & { name: string })[]>(
+    `SELECT p.name
+     FROM permissions p
+     JOIN role_permissions rp ON rp.permission_id = p.id
+     JOIN roles r ON r.id = rp.role_id
+     WHERE r.name = :roleName`,
+    { roleName }
+  );
+
+  return rows.map((r) => r.name);
 }
 
 export async function storeRefreshToken(input: {
