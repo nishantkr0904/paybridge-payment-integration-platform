@@ -6,7 +6,13 @@ import { ROLE_PERMISSIONS, type Permission, type Role } from '../types/auth.js';
  * Checks whether a given set of user roles grants a specific permission.
  * Supports legacy 'merchant' role mapped to full merchant_admin permissions.
  */
-export function hasPermission(userRoles: string[], permission: Permission): boolean {
+export function hasPermission(
+  userRoles: readonly string[] | string[] | undefined | null,
+  permission: Permission
+): boolean {
+  if (!userRoles || !Array.isArray(userRoles)) {
+    return false;
+  }
   return userRoles.some((role) => {
     const roleKey = role as Role;
     const permissions = ROLE_PERMISSIONS[roleKey];
@@ -18,7 +24,13 @@ export function hasPermission(userRoles: string[], permission: Permission): bool
  * Checks whether a given set of user roles satisfies the required role.
  * Considers 'merchant' and 'merchant_admin' interoperable for backward compatibility.
  */
-export function hasRole(userRoles: string[], requiredRole: Role | Role[] | string | string[]): boolean {
+export function hasRole(
+  userRoles: readonly string[] | string[] | undefined | null,
+  requiredRole: Role | Role[] | string | string[]
+): boolean {
+  if (!userRoles || !Array.isArray(userRoles)) {
+    return false;
+  }
   const allowed = Array.isArray(requiredRole) ? requiredRole : [requiredRole];
   return allowed.some((targetRole) => {
     if (userRoles.includes(targetRole)) {

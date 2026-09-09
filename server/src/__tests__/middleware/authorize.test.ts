@@ -144,6 +144,11 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
       expect(hasPermission([], 'payment:read')).toBe(false);
       expect(hasPermission(['unknown_role'], 'payment:read')).toBe(false);
     });
+
+    it('safely handles null or undefined roles without throwing', () => {
+      expect(hasPermission(undefined, 'payment:read')).toBe(false);
+      expect(hasPermission(null, 'payment:read')).toBe(false);
+    });
   });
 
   describe('hasRole Helper', () => {
@@ -162,6 +167,13 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
     it('handles arrays of required roles', () => {
       expect(hasRole(['merchant_operator'], ['merchant_admin', 'merchant_operator'])).toBe(true);
       expect(hasRole(['finance_analyst'], ['merchant_admin', 'merchant_operator'])).toBe(false);
+    });
+
+    it('safely handles null or undefined roles without throwing', () => {
+      expect(hasRole(undefined, 'merchant')).toBe(false);
+      expect(hasRole(null, 'merchant')).toBe(false);
+      expect(hasRole(undefined, ['merchant_admin', 'merchant_operator'])).toBe(false);
+      expect(hasRole(null, ['merchant_admin', 'merchant_operator'])).toBe(false);
     });
   });
 
