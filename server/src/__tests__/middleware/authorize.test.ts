@@ -13,6 +13,7 @@ import {
 } from '../../middleware/authorize.js';
 import { errorHandler } from '../../middleware/error-handler.js';
 import { HttpError } from '../../utils/http-error.js';
+import { ROLE_PERMISSIONS, type Permission, type Role } from '../../types/auth.js';
 
 describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
   describe('hasPermission Helper', () => {
@@ -505,6 +506,11 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
     let testMerchantId: number;
     let testOperatorId: number;
 
+    beforeAll(async () => {
+      const { runMigrations, getDefaultMigrationsDir } = await import('../../infrastructure/migrator.js');
+      await runMigrations({ migrationsDir: getDefaultMigrationsDir() });
+    });
+
     afterAll(async () => {
       const { pool } = await import('../../config/database.js');
       const conn = await pool.getConnection();
@@ -521,6 +527,102 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
 
       const { runMigrations, getDefaultMigrationsDir } = await import('../../infrastructure/migrator.js');
       await runMigrations({ migrationsDir: getDefaultMigrationsDir() });
+    });
+
+    describe('Database & Runtime RBAC Parity Verification (ARCH-1)', () => {
+      it('verifies 100% bidirectional role parity between DB roles table and runtime ROLE_PERMISSIONS', async () => {
+        const { pool } = await import('../../config/database.js');
+        const conn = await pool.getConnection();
+        try {
+          const [roleRows] = await conn.query<RowDataPacket[]>('SELECT name FROM roles ORDER BY name ASC');
+          const dbRoleNames = roleRows.map((r) => r.name as string);
+          const runtimeRoleNames = Object.keys(ROLE_PERMISSIONS);
+
+          // The test must fail if:
+          // a. a DB role exists that is missing from ROLE_PERMISSIONS
+          const missingInRuntime = dbRoleNames.filter((r) => !(r in ROLE_PERMISSIONS));
+          expect(missingInRuntime).toEqual([]);
+
+          // b. a ROLE_PERMISSIONS role is missing from the DB
+          const missingInDb = runtimeRoleNames.filter((r) => !dbRoleNames.includes(r));
+          expect(missingInDb).toEqual([]);
+
+          // Bidirectional set and count equality
+          expect(new Set(dbRoleNames)).toEqual(new Set(runtimeRoleNames));
+          expect(dbRoleNames).toHaveLength(runtimeRoleNames.length);
+        } finally {
+          conn.release();
+        }
+      });
+
+      it('verifies 100% bidirectional permission parity between DB permissions table and canonical runtime permissions', async () => {
+        const { pool } = await import('../../config/database.js');
+        const conn = await pool.getConnection();
+        try {
+          const [permRows] = await conn.query<RowDataPacket[]>('SELECT name FROM permissions ORDER BY name ASC');
+          const dbPermissionNames = permRows.map((r) => r.name as string);
+
+          // Canonical runtime permission definition derived from ROLE_PERMISSIONS without duplicate hand-written lists
+          const canonicalRuntimePermissions = [...new Set(Object.values(ROLE_PERMISSIONS).flat())];
+
+          // The test must fail for missing or unexpected permissions:
+          const missingInRuntime = dbPermissionNames.filter(
+            (p) => !canonicalRuntimePermissions.includes(p as Permission)
+          );
+          expect(missingInRuntime).toEqual([]);
+
+          const missingInDb = canonicalRuntimePermissions.filter(
+            (p) => !dbPermissionNames.includes(p)
+          );
+          expect(missingInDb).toEqual([]);
+
+          // Bidirectional set and count equality
+          expect(new Set(dbPermissionNames)).toEqual(new Set(canonicalRuntimePermissions));
+          expect(dbPermissionNames).toHaveLength(canonicalRuntimePermissions.length);
+        } finally {
+          conn.release();
+        }
+      });
+
+      it('verifies 100% bidirectional role-permission mapping parity across all 7 roles', async () => {
+        const { findPermissionsByRole } = await import('../../modules/auth/auth.repository.js');
+
+        const allRoles: Role[] = [
+          'merchant',
+          'merchant_admin',
+          'merchant_operator',
+          'merchant_developer',
+          'finance_analyst',
+          'risk_compliance_reviewer',
+          'platform_operator'
+        ];
+
+        // Verify allRoles strictly covers all 7 keys in ROLE_PERMISSIONS
+        expect(new Set(allRoles)).toEqual(new Set(Object.keys(ROLE_PERMISSIONS)));
+        expect(allRoles).toHaveLength(Object.keys(ROLE_PERMISSIONS).length);
+
+        for (const role of allRoles) {
+          const dbPermissions = await findPermissionsByRole(role);
+          const expectedPermissions = ROLE_PERMISSIONS[role];
+
+          // Verify exact counts match
+          expect(dbPermissions.length).toBe(expectedPermissions.length);
+
+          // Verify identical membership bidirectionally
+          expect(new Set(dbPermissions)).toEqual(new Set(expectedPermissions));
+
+          // Verify no unexpected or missing permissions for this role
+          const extraInDb = dbPermissions.filter(
+            (p) => !expectedPermissions.includes(p as Permission)
+          );
+          expect(extraInDb).toEqual([]);
+
+          const missingInDb = expectedPermissions.filter(
+            (p) => !dbPermissions.includes(p)
+          );
+          expect(missingInDb).toEqual([]);
+        }
+      });
     });
 
     it('creates merchant user with default legacy merchant role', async () => {
