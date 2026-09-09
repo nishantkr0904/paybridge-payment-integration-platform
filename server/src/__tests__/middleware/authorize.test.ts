@@ -13,7 +13,8 @@ import {
 } from '../../middleware/authorize.js';
 import { errorHandler } from '../../middleware/error-handler.js';
 import { HttpError } from '../../utils/http-error.js';
-import { ROLE_PERMISSIONS, type Permission, type Role } from '../../types/auth.js';
+import { ROLE_PERMISSIONS, type Permission, type Role, type AuthUser } from '../../types/auth.js';
+import { signAccessToken, verifyAccessToken } from '../../utils/token.js';
 
 describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
   describe('hasPermission Helper', () => {
@@ -397,8 +398,19 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
       const app = express();
       app.use(express.json());
 
-      // Mock auth injector to simulate authenticate middleware
+      // Auth injector supporting both signed JWT Bearer tokens and x-test-roles header
       app.use((req, _res, next) => {
+        const authHeader = req.header('authorization');
+        if (authHeader?.startsWith('Bearer ')) {
+          try {
+            const token = authHeader.slice(7);
+            req.user = verifyAccessToken(token);
+            return next();
+          } catch {
+            return next(new HttpError(401, 'AUTH_TOKEN_INVALID', 'Access token is invalid or expired.'));
+          }
+        }
+
         const roleHeader = req.header('x-test-roles');
         if (roleHeader !== undefined) {
           req.user = {
@@ -420,6 +432,25 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
       app.get('/test/ops-only', requireRole('platform_operator'), (_req, res) => {
         res.json({ success: true, action: 'ops-only' });
       });
+
+      // Protected route requiring recovery:approve (granted to merchant_operator, not finance_analyst)
+      app.post('/test/recovery-approve', requirePermission('recovery:approve'), (_req, res) => {
+        res.json({ success: true, action: 'recovery:approve' });
+      });
+
+      // Protected route requiring ledger:read (granted to finance_analyst, not merchant_operator)
+      app.get('/test/ledger-read', requirePermission('ledger:read'), (_req, res) => {
+        res.json({ success: true, action: 'ledger:read' });
+      });
+
+      // Protected route requiring BOTH recovery:approve AND ledger:read (requires combined capabilities)
+      app.post(
+        '/test/composite-permissions',
+        requirePermission(['recovery:approve', 'ledger:read']),
+        (_req, res) => {
+          res.json({ success: true, action: 'composite-permissions' });
+        }
+      );
 
       app.use(errorHandler);
 
@@ -498,6 +529,165 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
           code: 'AUTH_FORBIDDEN',
           message: 'Forbidden: Requires one of [platform_operator] roles.'
         }
+      });
+    });
+
+    describe('Multi-Role Authenticated Caller Integration (TG-2)', () => {
+      it('returns 200 OK when multi-role caller accesses permission granted by first role (recovery:approve via merchant_operator)', async () => {
+        const res = await fetch(`${baseUrl}/test/recovery-approve`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-test-roles': 'merchant_operator,finance_analyst'
+          }
+        });
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data).toEqual({ success: true, action: 'recovery:approve' });
+      });
+
+      it('returns 200 OK when multi-role caller accesses permission granted by second role (ledger:read via finance_analyst)', async () => {
+        const res = await fetch(`${baseUrl}/test/ledger-read`, {
+          headers: {
+            'x-test-roles': 'merchant_operator,finance_analyst'
+          }
+        });
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data).toEqual({ success: true, action: 'ledger:read' });
+      });
+
+      it('returns 200 OK when multi-role caller satisfies composite AND permissions requiring capabilities from both roles', async () => {
+        const res = await fetch(`${baseUrl}/test/composite-permissions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-test-roles': 'merchant_operator,finance_analyst'
+          }
+        });
+
+        expect(res.status).toBe(200);
+        const data = await res.json();
+        expect(data).toEqual({ success: true, action: 'composite-permissions' });
+      });
+
+      it('returns 403 AUTH_FORBIDDEN when single-role callers attempt composite action requiring both roles', async () => {
+        // merchant_operator lacks ledger:read
+        const opRes = await fetch(`${baseUrl}/test/composite-permissions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-test-roles': 'merchant_operator'
+          }
+        });
+        expect(opRes.status).toBe(403);
+        const opData = (await opRes.json()) as { error: { code: string; message: string } };
+        expect(opData.error.code).toBe('AUTH_FORBIDDEN');
+        expect(opData.error.message).toContain('Missing required permission(s): ledger:read');
+
+        // finance_analyst lacks recovery:approve
+        const finRes = await fetch(`${baseUrl}/test/composite-permissions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-test-roles': 'finance_analyst'
+          }
+        });
+        expect(finRes.status).toBe(403);
+        const finData = (await finRes.json()) as { error: { code: string; message: string } };
+        expect(finData.error.code).toBe('AUTH_FORBIDDEN');
+        expect(finData.error.message).toContain('Missing required permission(s): recovery:approve');
+      });
+
+      it('returns 403 AUTH_FORBIDDEN when multi-role caller accesses permission unavailable in all assigned roles', async () => {
+        // Neither merchant_operator nor finance_analyst has policy:update
+        const res = await fetch(`${baseUrl}/test/policy-update`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-test-roles': 'merchant_operator,finance_analyst'
+          }
+        });
+
+        expect(res.status).toBe(403);
+        const data = (await res.json()) as { error: { code: string; message: string } };
+        expect(data.error.code).toBe('AUTH_FORBIDDEN');
+        expect(data.error.message).toContain('Missing required permission(s): policy:update');
+      });
+
+      it('returns 401 AUTH_TOKEN_MISSING when accessing protected routes without authentication', async () => {
+        const resApprove = await fetch(`${baseUrl}/test/recovery-approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        expect(resApprove.status).toBe(401);
+        const dataApprove = await resApprove.json();
+        expect(dataApprove).toEqual({
+          error: {
+            code: 'AUTH_TOKEN_MISSING',
+            message: 'Authentication required.'
+          }
+        });
+
+        const resLedger = await fetch(`${baseUrl}/test/ledger-read`);
+        expect(resLedger.status).toBe(401);
+        const dataLedger = await resLedger.json();
+        expect(dataLedger).toEqual({
+          error: {
+            code: 'AUTH_TOKEN_MISSING',
+            message: 'Authentication required.'
+          }
+        });
+
+        const resComposite = await fetch(`${baseUrl}/test/composite-permissions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' }
+        });
+        expect(resComposite.status).toBe(401);
+        const dataComposite = await resComposite.json();
+        expect(dataComposite).toEqual({
+          error: {
+            code: 'AUTH_TOKEN_MISSING',
+            message: 'Authentication required.'
+          }
+        });
+      });
+
+      it('verifies multi-role pipeline authorization with real signed JWT Bearer tokens', async () => {
+        const multiRoleUser: AuthUser = {
+          id: 555,
+          email: 'multi_jwt@example.com',
+          merchantName: 'Multi JWT Merchant',
+          roles: ['merchant_operator', 'finance_analyst']
+        };
+        const token = signAccessToken(multiRoleUser);
+
+        // Success on composite action combining both roles
+        const successRes = await fetch(`${baseUrl}/test/composite-permissions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          }
+        });
+        expect(successRes.status).toBe(200);
+        const successData = await successRes.json();
+        expect(successData).toEqual({ success: true, action: 'composite-permissions' });
+
+        // Forbidden on permission not granted to either role
+        const forbiddenRes = await fetch(`${baseUrl}/test/policy-update`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`
+          }
+        });
+        expect(forbiddenRes.status).toBe(403);
+        const forbiddenData = (await forbiddenRes.json()) as { error: { code: string; message: string } };
+        expect(forbiddenData.error.code).toBe('AUTH_FORBIDDEN');
+        expect(forbiddenData.error.message).toContain('Missing required permission(s): policy:update');
       });
     });
   });
