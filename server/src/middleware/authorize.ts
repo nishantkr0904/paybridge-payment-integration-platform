@@ -54,6 +54,9 @@ export function hasRole(
  */
 export function requirePermission(permission: Permission | Permission[]): RequestHandler {
   const requiredList = Array.isArray(permission) ? permission : [permission];
+  if (requiredList.length === 0) {
+    throw new Error('requirePermission requires at least one permission.');
+  }
 
   return (req: Request, _res: Response, next: NextFunction): void => {
     if (!req.user) {
@@ -85,6 +88,10 @@ export function requirePermission(permission: Permission | Permission[]): Reques
  * - If caller has none of the permissions -> 403 AUTH_FORBIDDEN
  */
 export function requireAnyPermission(permissions: Permission[]): RequestHandler {
+  if (!Array.isArray(permissions) || permissions.length === 0) {
+    throw new Error('requireAnyPermission requires at least one permission.');
+  }
+
   return (req: Request, _res: Response, next: NextFunction): void => {
     if (!req.user) {
       next(new HttpError(401, 'AUTH_TOKEN_MISSING', 'Authentication required.'));

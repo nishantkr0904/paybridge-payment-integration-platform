@@ -257,6 +257,10 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
       expect(error.code).toBe('AUTH_FORBIDDEN');
       expect(error.message).toContain('policy:update');
     });
+
+    it('throws at creation time when passed an empty permission array, preventing request authorization', () => {
+      expect(() => requirePermission([])).toThrow('requirePermission requires at least one permission.');
+    });
   });
 
   describe('requireAnyPermission Middleware', () => {
@@ -302,6 +306,10 @@ describe('RBAC Authorization Primitives (TASK-RBAC-PHASE-A)', () => {
       const error = next.mock.calls[0][0] as HttpError;
       expect(error.statusCode).toBe(403);
       expect(error.code).toBe('AUTH_FORBIDDEN');
+    });
+
+    it('throws at creation time when passed an empty permission array, preventing request authorization', () => {
+      expect(() => requireAnyPermission([])).toThrow('requireAnyPermission requires at least one permission.');
     });
   });
 
