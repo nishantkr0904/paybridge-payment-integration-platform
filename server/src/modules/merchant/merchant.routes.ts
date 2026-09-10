@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
 import { requirePermission } from '../../middleware/authorize.js';
+import { HttpError } from '../../utils/http-error.js';
 import {
   activatePolicy,
   createPolicy,
@@ -208,11 +209,24 @@ merchantRouter.patch('/policies/:id/deactivate', async (req, res, next) => {
 /*  Recovery Prioritisation & Revenue Ledger Routes (RCV-002)         */
 /* ------------------------------------------------------------------ */
 
-const ledgerQuerySchema = z.object({
-  startDate: z.string().datetime().optional(),
-  endDate: z.string().datetime().optional(),
-  currency: z.string().length(3).optional()
-});
+const ledgerQuerySchema = z
+  .object({
+    startDate: z.string().datetime().optional(),
+    endDate: z.string().datetime().optional(),
+    currency: z.string().length(3).optional()
+  })
+  .refine(
+    (data) => {
+      if (data.startDate && data.endDate) {
+        return new Date(data.startDate).getTime() <= new Date(data.endDate).getTime();
+      }
+      return true;
+    },
+    {
+      message: 'startDate must be less than or equal to endDate.',
+      path: ['startDate']
+    }
+  );
 
 const queueQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).default(50),
@@ -294,7 +308,7 @@ merchantRouter.post('/recovery/shed', requirePermission('ops:shed:execute'), asy
     const input = loadShedSchema.parse(req.body);
     const result = await (await import('../recovery/case.service.js')).shedExcessBacklog(
       input.capacityLimit,
-      req.id?.toString(),
+      req.correlationId || req.id?.toString(),
       req.user!.id
     );
     res.json(result);
@@ -307,6 +321,9 @@ merchantRouter.post('/recovery/shed', requirePermission('ops:shed:execute'), asy
 merchantRouter.get('/recovery/cases/:caseId/trace', requirePermission('explainability:read'), async (req, res, next) => {
   try {
     const caseId = Number(Array.isArray(req.params.caseId) ? req.params.caseId[0] : req.params.caseId);
+    if (isNaN(caseId) || caseId <= 0) {
+      throw new HttpError(400, 'INVALID_CASE_ID', 'Case ID must be a positive integer.');
+    }
     const summary = await (await import('../ai/tracing/trace.service.js')).getMerchantTraceSummary(
       caseId,
       req.user!.id

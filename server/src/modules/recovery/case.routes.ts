@@ -298,9 +298,9 @@ caseRouter.post(
         { type: 'operator', id: req.user!.email },
         body.reason,
         {
+          ...body.payload,
           operatorAction: body.action,
-          operatorEmail: req.user!.email,
-          ...body.payload
+          operatorEmail: req.user!.email
         },
         req.correlationId
       );

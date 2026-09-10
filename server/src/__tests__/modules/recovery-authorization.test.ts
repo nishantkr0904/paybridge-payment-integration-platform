@@ -1,5 +1,5 @@
 import type { Server } from 'node:http';
-import type { ResultSetHeader } from 'mysql2/promise';
+import type { ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../../app.js';
 import { pool } from '../../config/database.js';
@@ -507,6 +507,15 @@ describe('Phase B-3: Recovery Surface Route-Level Authorization', () => {
         });
         expect(res.status).toBe(403);
       });
+
+      it('preserves tenant isolation: returns 404 for traces of another merchant case', async () => {
+        const res = await fetch(`${baseUrl}/api/recovery/cases/${m2CaseId}/traces`, {
+          headers: { Authorization: `Bearer ${merchantOperatorToken}` }
+        });
+        expect(res.status).toBe(404);
+        const data = (await res.json()) as { error: { code: string } };
+        expect(data.error.code).toBe('CASE_NOT_FOUND');
+      });
     });
 
     /* 7. GET /api/recovery/cases/:idOrRef/explainability */
@@ -537,7 +546,7 @@ describe('Phase B-3: Recovery Surface Route-Level Authorization', () => {
 
     /* 8. POST /api/recovery/cases/:caseId/actions */
     describe('POST /api/recovery/cases/:caseId/actions (Action-specific authorization)', () => {
-      it('allows merchant_operator with recovery:approve to APPROVE (200 OK)', async () => {
+      it('allows merchant_operator with recovery:approve to APPROVE and prevents audit metadata spoofing', async () => {
         const res = await fetch(`${baseUrl}/api/recovery/cases/${m1Case1Id}/actions`, {
           method: 'POST',
           headers: {
@@ -546,12 +555,28 @@ describe('Phase B-3: Recovery Surface Route-Level Authorization', () => {
           },
           body: JSON.stringify({
             action: 'APPROVE',
-            reason: 'Operator approved recovery execution'
+            reason: 'Operator approved recovery execution',
+            payload: {
+              operatorEmail: 'spoofed_victim@bank.com',
+              operatorAction: 'REJECT',
+              customNote: 'legitimate_supplemental_field'
+            }
           })
         });
         expect(res.status).toBe(200);
         const data = (await res.json()) as { case: { status: string } };
         expect(data.case.status).toBe('executing');
+
+        // Verify audit event in case_events table cannot be spoofed
+        const [rows] = await pool.query<RowDataPacket[]>(
+          'SELECT payload FROM case_events WHERE case_id = ? AND to_status = ? ORDER BY id DESC LIMIT 1',
+          [m1Case1Id, 'executing']
+        );
+        expect(rows.length).toBe(1);
+        const payload = typeof rows[0].payload === 'string' ? JSON.parse(rows[0].payload) : rows[0].payload;
+        expect(payload.operatorEmail).toBe('m_op@merchant.com');
+        expect(payload.operatorAction).toBe('APPROVE');
+        expect(payload.customNote).toBe('legitimate_supplemental_field');
       });
 
       it('denies roles lacking all action permissions before parsing action (403 AUTH_FORBIDDEN)', async () => {
@@ -676,6 +701,23 @@ describe('Phase B-3: Recovery Surface Route-Level Authorization', () => {
         const approveData = (await approveRes.json()) as { error: { message: string } };
         expect(approveData.error.message).toContain('recovery:approve');
       });
+
+      it('preserves tenant isolation: returns 404 for action against another merchant case', async () => {
+        const res = await fetch(`${baseUrl}/api/recovery/cases/${m2CaseId}/actions`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${merchantOperatorToken}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            action: 'APPROVE',
+            reason: 'Cross-tenant attempt'
+          })
+        });
+        expect(res.status).toBe(404);
+        const data = (await res.json()) as { error: { code: string } };
+        expect(data.error.code).toBe('CASE_NOT_FOUND');
+      });
     });
   });
 
@@ -723,6 +765,18 @@ describe('Phase B-3: Recovery Surface Route-Level Authorization', () => {
           headers: { Authorization: `Bearer ${riskComplianceReviewerToken}` }
         });
         expect(resComp.status).toBe(403);
+      });
+
+      it('rejects inverted date range (startDate > endDate) with 400 validation error', async () => {
+        const res = await fetch(
+          `${baseUrl}/api/merchants/recovery/ledger?startDate=2026-03-01T00:00:00.000Z&endDate=2026-01-01T00:00:00.000Z`,
+          {
+            headers: { Authorization: `Bearer ${financeAnalystToken}` }
+          }
+        );
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { code: string } };
+        expect(data.error.code).toBe('VALIDATION_ERROR');
       });
     });
 
@@ -847,6 +901,35 @@ describe('Phase B-3: Recovery Surface Route-Level Authorization', () => {
         });
         expect(resComp.status).toBe(403);
       });
+
+      it('preserves request correlationId during load shedding', async () => {
+        const m2OperatorToken = signAccessToken({
+          id: merchant2Id,
+          email: 'm2_op@merchant.com',
+          merchantName: 'Recovery Auth Merchant 2',
+          roles: ['merchant_operator']
+        });
+        const testCorrId = 'test-corr-shed-' + generateUlid();
+        const res = await fetch(`${baseUrl}/api/merchants/recovery/shed`, {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${m2OperatorToken}`,
+            'Content-Type': 'application/json',
+            'x-correlation-id': testCorrId
+          },
+          body: JSON.stringify({ capacityLimit: 0 })
+        });
+        expect(res.status).toBe(200);
+        const data = (await res.json()) as { shedCount: number };
+        expect(data.shedCount).toBe(1);
+
+        const [events] = await pool.query<RowDataPacket[]>(
+          'SELECT correlation_id FROM case_events WHERE case_id = ? AND to_status = ? LIMIT 1',
+          [m2CaseId, 'suppressed']
+        );
+        expect(events.length).toBe(1);
+        expect(events[0].correlation_id).toBe(testCorrId);
+      });
     });
 
     /* 14. GET /api/merchants/recovery/cases/:caseId/trace (explainability:read) */
@@ -876,6 +959,33 @@ describe('Phase B-3: Recovery Surface Route-Level Authorization', () => {
           headers: { Authorization: `Bearer ${platformOperatorToken}` }
         });
         expect(res.status).toBe(403);
+      });
+
+      it('rejects non-numeric caseId with 400 INVALID_CASE_ID', async () => {
+        const res = await fetch(`${baseUrl}/api/merchants/recovery/cases/invalid-id/trace`, {
+          headers: { Authorization: `Bearer ${riskComplianceReviewerToken}` }
+        });
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { code: string; message: string } };
+        expect(data.error.code).toBe('INVALID_CASE_ID');
+      });
+
+      it('rejects zero caseId with 400 INVALID_CASE_ID', async () => {
+        const res = await fetch(`${baseUrl}/api/merchants/recovery/cases/0/trace`, {
+          headers: { Authorization: `Bearer ${riskComplianceReviewerToken}` }
+        });
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { code: string; message: string } };
+        expect(data.error.code).toBe('INVALID_CASE_ID');
+      });
+
+      it('rejects negative caseId with 400 INVALID_CASE_ID', async () => {
+        const res = await fetch(`${baseUrl}/api/merchants/recovery/cases/-5/trace`, {
+          headers: { Authorization: `Bearer ${riskComplianceReviewerToken}` }
+        });
+        expect(res.status).toBe(400);
+        const data = (await res.json()) as { error: { code: string; message: string } };
+        expect(data.error.code).toBe('INVALID_CASE_ID');
       });
     });
 
