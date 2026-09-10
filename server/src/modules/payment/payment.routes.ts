@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
+import { requirePermission } from '../../middleware/authorize.js';
 import { generateUlid } from '../../utils/ulid.js';
 import { executeWithIdempotency } from '../idempotency/idempotency.service.js';
 import {
@@ -38,7 +39,7 @@ export const paymentRouter = Router();
 paymentRouter.use(authenticate);
 
 /* POST /api/payments/orders — create checkout order */
-paymentRouter.post('/orders', async (req, res, next) => {
+paymentRouter.post('/orders', requirePermission('payment:create'), async (req, res, next) => {
   try {
     const input = createOrderSchema.parse(req.body);
     const idempotencyKey =
@@ -51,13 +52,14 @@ paymentRouter.post('/orders', async (req, res, next) => {
 });
 
 /* POST /api/payments/orders/:orderRef/pay — process payment */
-paymentRouter.post('/orders/:orderRef/pay', async (req, res, next) => {
+paymentRouter.post('/orders/:orderRef/pay', requirePermission('payment:create'), async (req, res, next) => {
   try {
     const input = processPaymentSchema.parse(req.body);
     const idempotencyKey =
       req.header('idempotency-key') || req.header('x-idempotency-key') || undefined;
+    const orderRef = Array.isArray(req.params.orderRef) ? req.params.orderRef[0]! : req.params.orderRef!;
     const result = await processPayment(
-      req.params.orderRef,
+      orderRef,
       req.user!.id,
       input,
       idempotencyKey,
@@ -70,9 +72,10 @@ paymentRouter.post('/orders/:orderRef/pay', async (req, res, next) => {
 });
 
 /* GET /api/payments/orders/:orderRef — get order status */
-paymentRouter.get('/orders/:orderRef', async (req, res, next) => {
+paymentRouter.get('/orders/:orderRef', requirePermission('payment:read'), async (req, res, next) => {
   try {
-    const result = await getOrderStatus(req.params.orderRef, req.user!.id);
+    const orderRef = Array.isArray(req.params.orderRef) ? req.params.orderRef[0]! : req.params.orderRef!;
+    const result = await getOrderStatus(orderRef, req.user!.id);
     res.json(result);
   } catch (error) {
     next(error);
@@ -80,7 +83,7 @@ paymentRouter.get('/orders/:orderRef', async (req, res, next) => {
 });
 
 /* GET /api/payments/orders — list merchant orders */
-paymentRouter.get('/orders', async (req, res, next) => {
+paymentRouter.get('/orders', requirePermission('payment:read'), async (req, res, next) => {
   try {
     const filters = listOrdersSchema.parse(req.query);
     const result = await listMerchantOrders(req.user!.id, filters);
@@ -125,8 +128,8 @@ const handleAbandonmentIngest = async (req: Request, res: Response, next: NextFu
   }
 };
 
-paymentRouter.post('/orders/:orderRef/abandonment', handleAbandonmentIngest);
-paymentRouter.post('/orders/:orderRef/abandoned', handleAbandonmentIngest);
+paymentRouter.post('/orders/:orderRef/abandonment', requirePermission('payment:create'), handleAbandonmentIngest);
+paymentRouter.post('/orders/:orderRef/abandoned', requirePermission('payment:create'), handleAbandonmentIngest);
 
 /* ------------------------------------------------------------------ */
 /*  Timeout Detection Routes (SIG-002 / BT-D2)                        */
@@ -139,7 +142,7 @@ const timeoutDetectionSchema = z.object({
 });
 
 /* POST /api/payments/checkout/timeout-detection — batch scan or check timeout */
-paymentRouter.post('/checkout/timeout-detection', async (req: Request, res: Response, next: NextFunction) => {
+paymentRouter.post('/checkout/timeout-detection', requirePermission('payment:create'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const input = timeoutDetectionSchema.parse(req.body || {});
     if (input.orderRef) {
@@ -165,7 +168,7 @@ paymentRouter.post('/checkout/timeout-detection', async (req: Request, res: Resp
 });
 
 /* POST /api/payments/orders/:orderRef/timeout-detection — single order timeout evaluation */
-paymentRouter.post('/orders/:orderRef/timeout-detection', async (req: Request, res: Response, next: NextFunction) => {
+paymentRouter.post('/orders/:orderRef/timeout-detection', requirePermission('payment:create'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const input = timeoutDetectionSchema.parse(req.body || {});
     const orderRef = Array.isArray(req.params.orderRef) ? req.params.orderRef[0]! : req.params.orderRef!;
