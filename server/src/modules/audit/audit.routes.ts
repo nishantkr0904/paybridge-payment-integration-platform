@@ -1,6 +1,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
+import { requirePermission } from '../../middleware/authorize.js';
 import { HttpError } from '../../utils/http-error.js';
 import { logger } from '../../utils/logger.js';
 import { exportCaseAuditTrail } from './audit.service.js';
@@ -22,7 +23,7 @@ const ExportQuerySchema = z.object({
  * GET /api/audit/cases/:idOrRef/export
  * Exports certified audit trail artifact as CSV or JSON for compliance/dispute defense (AUD-006 / RDB-002).
  */
-auditRouter.get('/cases/:idOrRef/export', async (req: Request, res: Response, next: NextFunction) => {
+auditRouter.get('/cases/:idOrRef/export', requirePermission('audit:export'), async (req: Request, res: Response, next: NextFunction) => {
   try {
     const merchantId = req.user!.id;
     const actorEmail = req.user!.email;

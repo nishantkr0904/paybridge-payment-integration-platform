@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
+import { requirePermission } from '../../middleware/authorize.js';
 import {
   activatePolicy,
   createPolicy,
@@ -136,7 +137,7 @@ merchantRouter.post('/policies', async (req, res, next) => {
 });
 
 /* POST /api/merchants/policies/evaluate — evaluate proposed recovery action against active policy */
-merchantRouter.post('/policies/evaluate', async (req, res, next) => {
+merchantRouter.post('/policies/evaluate', requirePermission('policy:evaluate'), async (req, res, next) => {
   try {
     const { action, context } = evaluateActionSchema.parse(req.body);
     const evaluationContext = {
@@ -223,7 +224,7 @@ const loadShedSchema = z.object({
 });
 
 /* GET /api/merchants/recovery/ledger — get recoverable revenue & leakage ledger */
-merchantRouter.get('/recovery/ledger', async (req, res, next) => {
+merchantRouter.get('/recovery/ledger', requirePermission('ledger:read'), async (req, res, next) => {
   try {
     const query = ledgerQuerySchema.parse(req.query);
     const filters = {
@@ -242,7 +243,7 @@ merchantRouter.get('/recovery/ledger', async (req, res, next) => {
 });
 
 /* GET /api/merchants/recovery/analytics — get recovery analytics for authenticated merchant */
-merchantRouter.get('/recovery/analytics', async (req, res, next) => {
+merchantRouter.get('/recovery/analytics', requirePermission('recovery:read'), async (req, res, next) => {
   try {
     const { analyticsQuerySchema } = await import('../recovery/case.routes.js');
     const query = analyticsQuerySchema.parse(req.query);
@@ -260,7 +261,7 @@ merchantRouter.get('/recovery/analytics', async (req, res, next) => {
 });
 
 /* GET /api/merchants/recovery/queue — get prioritized recovery cases */
-merchantRouter.get('/recovery/queue', async (req, res, next) => {
+merchantRouter.get('/recovery/queue', requirePermission('recovery:read'), async (req, res, next) => {
   try {
     const query = queueQuerySchema.parse(req.query);
     const prioritizedQueue = await (
@@ -276,7 +277,7 @@ merchantRouter.get('/recovery/queue', async (req, res, next) => {
 });
 
 /* GET /api/merchants/recovery/metrics — get queue depth, oldest age, and shed volume */
-merchantRouter.get('/recovery/metrics', async (req, res, next) => {
+merchantRouter.get('/recovery/metrics', requirePermission('recovery:read'), async (req, res, next) => {
   try {
     const metrics = await (await import('../recovery/case.service.js')).getQueueMetrics(
       req.user!.id
@@ -288,7 +289,7 @@ merchantRouter.get('/recovery/metrics', async (req, res, next) => {
 });
 
 /* POST /api/merchants/recovery/shed — execute load shedding when backlog exceeds capacity */
-merchantRouter.post('/recovery/shed', async (req, res, next) => {
+merchantRouter.post('/recovery/shed', requirePermission('ops:shed:execute'), async (req, res, next) => {
   try {
     const input = loadShedSchema.parse(req.body);
     const result = await (await import('../recovery/case.service.js')).shedExcessBacklog(
@@ -303,9 +304,9 @@ merchantRouter.post('/recovery/shed', async (req, res, next) => {
 });
 
 /* GET /api/merchants/recovery/cases/:caseId/trace — get sanitized case trace summary (AI-007 / RDB-003) */
-merchantRouter.get('/recovery/cases/:caseId/trace', async (req, res, next) => {
+merchantRouter.get('/recovery/cases/:caseId/trace', requirePermission('explainability:read'), async (req, res, next) => {
   try {
-    const caseId = Number(req.params.caseId);
+    const caseId = Number(Array.isArray(req.params.caseId) ? req.params.caseId[0] : req.params.caseId);
     const summary = await (await import('../ai/tracing/trace.service.js')).getMerchantTraceSummary(
       caseId,
       req.user!.id

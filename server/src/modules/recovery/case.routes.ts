@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
+import { requirePermission, requireAnyPermission, hasPermission } from '../../middleware/authorize.js';
+import type { Permission } from '../../types/auth.js';
 import { HttpError } from '../../utils/http-error.js';
 import { canTransition, InvalidCaseTransitionError } from './case.state-machine.js';
 import {
@@ -95,7 +97,7 @@ caseRouter.use(authenticate);
 /* ------------------------------------------------------------------ */
 
 /* GET /api/recovery/analytics — get recovery performance KPIs, latency, and strategy performance */
-caseRouter.get('/analytics', async (req, res, next) => {
+caseRouter.get('/analytics', requirePermission('recovery:read'), async (req, res, next) => {
   try {
     const query = analyticsQuerySchema.parse(req.query);
     const merchantId = req.user!.id;
@@ -118,7 +120,7 @@ caseRouter.get('/analytics', async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 
 /* GET /api/recovery/cases — list recovery cases with status filtering and pagination */
-caseRouter.get('/cases', async (req, res, next) => {
+caseRouter.get('/cases', requirePermission('recovery:read'), async (req, res, next) => {
   try {
     const query = listCasesQuerySchema.parse(req.query);
     const merchantId = req.user!.id;
@@ -144,7 +146,7 @@ caseRouter.get('/cases', async (req, res, next) => {
 });
 
 /* GET /api/recovery/queue — get prioritized triage queue */
-caseRouter.get('/queue', async (req, res, next) => {
+caseRouter.get('/queue', requirePermission('recovery:read'), async (req, res, next) => {
   try {
     const query = queueQuerySchema.parse(req.query);
     const merchantId = req.user!.id;
@@ -168,9 +170,9 @@ caseRouter.get('/queue', async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 
 /* GET /api/recovery/cases/:idOrRef — get single case by numeric ID or ULID reference */
-caseRouter.get('/cases/:idOrRef', async (req, res, next) => {
+caseRouter.get('/cases/:idOrRef', requirePermission('recovery:read'), async (req, res, next) => {
   try {
-    const { idOrRef } = req.params;
+    const idOrRef = Array.isArray(req.params.idOrRef) ? req.params.idOrRef[0]! : req.params.idOrRef!;
     const merchantId = req.user!.id;
 
     const numericId = Number(idOrRef);
@@ -189,9 +191,9 @@ caseRouter.get('/cases/:idOrRef', async (req, res, next) => {
 });
 
 /* GET /api/recovery/cases/:caseId/timeline — get chronological case event history */
-caseRouter.get('/cases/:caseId/timeline', async (req, res, next) => {
+caseRouter.get('/cases/:caseId/timeline', requirePermission('recovery:read'), async (req, res, next) => {
   try {
-    const caseId = Number(req.params.caseId);
+    const caseId = Number(Array.isArray(req.params.caseId) ? req.params.caseId[0] : req.params.caseId);
     if (isNaN(caseId) || caseId <= 0) {
       throw new HttpError(400, 'INVALID_CASE_ID', 'Case ID must be a positive integer.');
     }
@@ -205,9 +207,9 @@ caseRouter.get('/cases/:caseId/timeline', async (req, res, next) => {
 });
 
 /* GET /api/recovery/cases/:caseId/traces — get agent reasoning traces for case */
-caseRouter.get('/cases/:caseId/traces', async (req, res, next) => {
+caseRouter.get('/cases/:caseId/traces', requirePermission('explainability:read'), async (req, res, next) => {
   try {
-    const caseId = Number(req.params.caseId);
+    const caseId = Number(Array.isArray(req.params.caseId) ? req.params.caseId[0] : req.params.caseId);
     if (isNaN(caseId) || caseId <= 0) {
       throw new HttpError(400, 'INVALID_CASE_ID', 'Case ID must be a positive integer.');
     }
@@ -224,9 +226,9 @@ caseRouter.get('/cases/:caseId/traces', async (req, res, next) => {
 });
 
 /* GET /api/recovery/cases/:idOrRef/explainability — get unified explainability payload (BT-C4 / BC-7.5 / BEX-003) */
-caseRouter.get('/cases/:idOrRef/explainability', async (req, res, next) => {
+caseRouter.get('/cases/:idOrRef/explainability', requirePermission('explainability:read'), async (req, res, next) => {
   try {
-    const { idOrRef } = req.params;
+    const idOrRef = Array.isArray(req.params.idOrRef) ? req.params.idOrRef[0]! : req.params.idOrRef!;
     const merchantId = req.user!.id;
 
     const explainability = await getCaseExplainability(idOrRef, merchantId);
@@ -241,56 +243,75 @@ caseRouter.get('/cases/:idOrRef/explainability', async (req, res, next) => {
 /* ------------------------------------------------------------------ */
 
 /* POST /api/recovery/cases/:caseId/actions — execute operator action */
-caseRouter.post('/cases/:caseId/actions', async (req, res, next) => {
-  try {
-    const caseId = Number(req.params.caseId);
-    if (isNaN(caseId) || caseId <= 0) {
-      throw new HttpError(400, 'INVALID_CASE_ID', 'Case ID must be a positive integer.');
-    }
-    const merchantId = req.user!.id;
-    const body = operatorActionSchema.parse(req.body);
+caseRouter.post(
+  '/cases/:caseId/actions',
+  requireAnyPermission(['recovery:approve', 'recovery:reject', 'recovery:close']),
+  async (req, res, next) => {
+    try {
+      const caseId = Number(Array.isArray(req.params.caseId) ? req.params.caseId[0] : req.params.caseId);
+      if (isNaN(caseId) || caseId <= 0) {
+        throw new HttpError(400, 'INVALID_CASE_ID', 'Case ID must be a positive integer.');
+      }
+      const merchantId = req.user!.id;
+      const body = operatorActionSchema.parse(req.body);
 
-    const existingCase = await getCaseById(caseId, merchantId);
+      const actionPermissionMap: Record<'APPROVE' | 'REJECT' | 'CLOSE', Permission> = {
+        APPROVE: 'recovery:approve',
+        REJECT: 'recovery:reject',
+        CLOSE: 'recovery:close'
+      };
 
-    let targetStatus: CaseStatus;
-    if (body.action === 'APPROVE') {
-      targetStatus = 'executing';
-    } else if (body.action === 'REJECT') {
-      targetStatus = 'suppressed';
-    } else if (body.action === 'CLOSE') {
-      targetStatus = 'suppressed';
-    } else {
-      throw new HttpError(400, 'INVALID_ACTION', `Unsupported operator action: ${body.action}`);
-    }
+      const requiredPermission = actionPermissionMap[body.action];
+      if (!hasPermission(req.user!.roles, requiredPermission)) {
+        throw new HttpError(
+          403,
+          'AUTH_FORBIDDEN',
+          `Forbidden: Missing required permission(s): ${requiredPermission}.`
+        );
+      }
 
-    if (!canTransition(existingCase.status, targetStatus)) {
-      throw new HttpError(
-        400,
-        'INVALID_CASE_TRANSITION',
-        `Cannot perform action '${body.action}' on case in '${existingCase.status}' status.`
+      const existingCase = await getCaseById(caseId, merchantId);
+
+      let targetStatus: CaseStatus;
+      if (body.action === 'APPROVE') {
+        targetStatus = 'executing';
+      } else if (body.action === 'REJECT') {
+        targetStatus = 'suppressed';
+      } else if (body.action === 'CLOSE') {
+        targetStatus = 'suppressed';
+      } else {
+        throw new HttpError(400, 'INVALID_ACTION', `Unsupported operator action: ${body.action}`);
+      }
+
+      if (!canTransition(existingCase.status, targetStatus)) {
+        throw new HttpError(
+          400,
+          'INVALID_CASE_TRANSITION',
+          `Cannot perform action '${body.action}' on case in '${existingCase.status}' status.`
+        );
+      }
+
+      const updatedCase = await transitionCase(
+        caseId,
+        merchantId,
+        targetStatus,
+        { type: 'operator', id: req.user!.email },
+        body.reason,
+        {
+          operatorAction: body.action,
+          operatorEmail: req.user!.email,
+          ...body.payload
+        },
+        req.correlationId
       );
-    }
 
-    const updatedCase = await transitionCase(
-      caseId,
-      merchantId,
-      targetStatus,
-      { type: 'operator', id: req.user!.email },
-      body.reason,
-      {
-        operatorAction: body.action,
-        operatorEmail: req.user!.email,
-        ...body.payload
-      },
-      req.correlationId
-    );
-
-    res.json({ case: updatedCase });
-  } catch (error) {
-    if (error instanceof InvalidCaseTransitionError) {
-      next(new HttpError(400, 'INVALID_CASE_TRANSITION', error.message));
-      return;
+      res.json({ case: updatedCase });
+    } catch (error) {
+      if (error instanceof InvalidCaseTransitionError) {
+        next(new HttpError(400, 'INVALID_CASE_TRANSITION', error.message));
+        return;
+      }
+      next(error);
     }
-    next(error);
   }
-});
+);
