@@ -24,7 +24,8 @@
     "db:rollback": "tsx src/database/cli.ts rollback",
     "db:status": "tsx src/database/cli.ts status",
     "db:baseline": "tsx src/database/cli.ts baseline",
-    "demo:llm": "tsx src/demo/cli.ts"
+    "demo:llm": "tsx src/demo/cli.ts",
+    "seed:operator": "tsx src/demo/seed-operator-demo.ts"
   },
   "dependencies": {
     "amqplib": "^2.0.1",

@@ -7,9 +7,13 @@ import {
   getCaseTraces,
   executeOperatorAction,
   exportCaseAuditTrail,
+  getRecoveryAnalytics,
+  getCaseExplainability,
   type RecoveryCase,
   type CaseEvent,
-  type AgentTrace
+  type AgentTrace,
+  type RecoveryAnalytics,
+  type UnifiedExplainabilityPayload
 } from '../api/recovery';
 import { api } from '../api/client';
 
@@ -391,4 +395,352 @@ describe('Recovery API Client (TASK-501 Frontend Scope)', () => {
       expect(result.signature).toBe('sig789');
     });
   });
+
+  describe('8. getRecoveryAnalytics', () => {
+    it('calls GET /recovery/analytics with query parameters and returns typed RecoveryAnalytics', async () => {
+      const mockAnalytics: RecoveryAnalytics = {
+        merchantId: 10,
+        currency: 'INR',
+        period: {
+          startDate: '2026-09-01T00:00:00Z',
+          endDate: '2026-09-11T23:59:59Z'
+        },
+        counts: {
+          totalCases: 10,
+          eligibleCases: 8,
+          ineligibleCases: 2,
+          totalAttempts: 12,
+          successfulRecoveries: 6,
+          unrecoveredCases: 2,
+          suppressedCases: 1,
+          inFlightCases: 1
+        },
+        revenue: {
+          totalDetectedMinorUnits: 500000,
+          addressableMinorUnits: 400000,
+          nonAddressableMinorUnits: 100000,
+          recoveredRevenueMinorUnits: 300000,
+          unrecoveredRevenueMinorUnits: 70000,
+          suppressedRevenueMinorUnits: 20000,
+          inFlightRevenueMinorUnits: 10000
+        },
+        rates: {
+          recoveryRate: 0.75,
+          revenueRecoveryRate: 0.75,
+          attemptRecoveryRate: 0.5,
+          overallCaseRecoveryRate: 0.6
+        },
+        latency: {
+          sampleSize: 6,
+          avgDurationSeconds: 120,
+          minDurationSeconds: 30,
+          maxDurationSeconds: 300,
+          p50DurationSeconds: 110,
+          p90DurationSeconds: 250,
+          p99DurationSeconds: 290
+        },
+        strategyPerformance: [
+          {
+            strategy: 'RETRY_PAYMENT',
+            attempts: 8,
+            successfulRecoveries: 5,
+            recoveryRate: 0.625,
+            recoveredRevenueMinorUnits: 250000
+          }
+        ],
+        categoryPerformance: [
+          {
+            failureCategory: 'INSUFFICIENT_FUNDS',
+            isAddressable: true,
+            caseCount: 5,
+            detectedMinorUnits: 250000,
+            recoveredMinorUnits: 180000,
+            suppressedMinorUnits: 0,
+            unrecoveredMinorUnits: 50000,
+            inFlightMinorUnits: 20000
+          }
+        ],
+        reconciliation: {
+          isReconciled: true,
+          varianceMinorUnits: 0
+        }
+      };
+
+      mockedApi.get.mockResolvedValueOnce({ data: mockAnalytics });
+
+      const params = {
+        startDate: '2026-09-01T00:00:00Z',
+        endDate: '2026-09-11T23:59:59Z',
+        currency: 'INR'
+      };
+      const result = await getRecoveryAnalytics(params);
+
+      expect(mockedApi.get).toHaveBeenCalledWith('/recovery/analytics', { params });
+      expect(result.merchantId).toBe(10);
+      expect(result.currency).toBe('INR');
+      expect(result.counts.totalCases).toBe(10);
+      expect(result.revenue.recoveredRevenueMinorUnits).toBe(300000);
+      expect(result.rates.recoveryRate).toBe(0.75);
+      expect(result.categoryPerformance[0].failureCategory).toBe('INSUFFICIENT_FUNDS');
+      expect(result.strategyPerformance[0].strategy).toBe('RETRY_PAYMENT');
+      expect(result.reconciliation.isReconciled).toBe(true);
+    });
+
+    it('calls GET /recovery/analytics without params when omitted', async () => {
+      const mockAnalytics: RecoveryAnalytics = {
+        merchantId: null,
+        currency: 'INR',
+        period: {},
+        counts: {
+          totalCases: 0,
+          eligibleCases: 0,
+          ineligibleCases: 0,
+          totalAttempts: 0,
+          successfulRecoveries: 0,
+          unrecoveredCases: 0,
+          suppressedCases: 0,
+          inFlightCases: 0
+        },
+        revenue: {
+          totalDetectedMinorUnits: 0,
+          addressableMinorUnits: 0,
+          nonAddressableMinorUnits: 0,
+          recoveredRevenueMinorUnits: 0,
+          unrecoveredRevenueMinorUnits: 0,
+          suppressedRevenueMinorUnits: 0,
+          inFlightRevenueMinorUnits: 0
+        },
+        rates: {
+          recoveryRate: 0,
+          revenueRecoveryRate: 0,
+          attemptRecoveryRate: 0,
+          overallCaseRecoveryRate: 0
+        },
+        latency: {
+          sampleSize: 0,
+          avgDurationSeconds: 0,
+          minDurationSeconds: 0,
+          maxDurationSeconds: 0,
+          p50DurationSeconds: 0,
+          p90DurationSeconds: 0,
+          p99DurationSeconds: 0
+        },
+        strategyPerformance: [],
+        categoryPerformance: [],
+        reconciliation: {
+          isReconciled: true,
+          varianceMinorUnits: 0
+        }
+      };
+
+      mockedApi.get.mockResolvedValueOnce({ data: mockAnalytics });
+
+      const result = await getRecoveryAnalytics();
+      expect(mockedApi.get).toHaveBeenCalledWith('/recovery/analytics', { params: undefined });
+      expect(result.counts.totalCases).toBe(0);
+      expect(result.strategyPerformance).toEqual([]);
+    });
+  });
+
+  describe('9. getCaseExplainability', () => {
+    it('calls GET /recovery/cases/:idOrRef/explainability for numeric case ID', async () => {
+      const mockPayload: UnifiedExplainabilityPayload = {
+        case: {
+          id: 42,
+          caseRef: 'CASE_01XYZ42',
+          merchantId: 10,
+          orderId: 500,
+          transactionId: 1000,
+          status: 'awaiting_approval',
+          recoverableAmountMinorUnits: 85000,
+          currency: 'INR',
+          originatingSignal: 'PAYMENT_FAILED',
+          failureCategory: 'INSUFFICIENT_FUNDS',
+          correlationId: '01CORR42',
+          createdAt: '2026-09-03T12:00:00Z',
+          updatedAt: '2026-09-03T12:05:00Z'
+        },
+        recoveryOutcome: {
+          status: 'awaiting_approval',
+          isTerminal: false,
+          recoveredAmountMinorUnits: null,
+          terminalReason: null,
+          completedAt: null
+        },
+        diagnosis: {
+          category: 'INSUFFICIENT_FUNDS',
+          reasonCode: 'SOFT_DECLINE_BALANCE',
+          rootCause: 'Account balance inadequate at time of presentation',
+          contributingFactors: ['Month-end cycle', 'High traffic period'],
+          recoverable: true,
+          recommendedStrategy: 'DELAYED_RETRY',
+          confidence: 0.92,
+          explanation: 'Customer balance typically refreshes on salary credit cycle',
+          evidence: ['Gateway code: 51', 'Issuer message: Insufficient funds'],
+          provenance: {
+            source: 'model',
+            promptId: 'diag_prompt_v1',
+            promptVersion: '1.0.0',
+            modelId: 'gemini-1.5-pro',
+            tokens: { inputTokens: 250, outputTokens: 90, totalTokens: 340 },
+            latencyMs: 380,
+            contextVersion: '1.0',
+            rulesVersion: null,
+            repairAttempted: false,
+            fallbackReason: null
+          }
+        },
+        decision: {
+          planRationale: 'Scheduled delayed retry aligned with payday window',
+          actions: [
+            {
+              actionType: 'RETRY_PAYMENT',
+              toolName: 'schedule_payment_retry',
+              scheduledDelaySeconds: 86400,
+              costMinorUnits: 0,
+              incentivePercent: 0,
+              rationale: 'Execute retry after 24 hours',
+              parameters: { channel: 'UPI' }
+            }
+          ],
+          primaryAction: {
+            actionType: 'RETRY_PAYMENT',
+            toolName: 'schedule_payment_retry',
+            scheduledDelaySeconds: 86400,
+            costMinorUnits: 0,
+            incentivePercent: 0,
+            rationale: 'Execute retry after 24 hours',
+            parameters: { channel: 'UPI' }
+          },
+          costOrderingRespect: true,
+          provenance: {
+            source: 'model',
+            promptId: 'dec_prompt_v1',
+            promptVersion: '1.0.0',
+            modelId: 'gemini-1.5-pro',
+            tokens: { inputTokens: 310, outputTokens: 120, totalTokens: 430 },
+            latencyMs: 410,
+            contextVersion: '1.0',
+            diagnosisCategory: 'INSUFFICIENT_FUNDS',
+            rulesVersion: null,
+            repairAttempted: false,
+            fallbackReason: null
+          }
+        },
+        policy: {
+          evaluation: {
+            decision: 'REQUIRES_HUMAN',
+            reasonCode: 'TIER_T2_ASSISTIVE',
+            ruleId: 'AUTONOMY_T2_CHECK',
+            message: 'Tier T2 requires operator approval before execution',
+            policyId: 1,
+            policyVersion: 1,
+            evaluatedTier: 'T2',
+            evaluatedAt: '2026-09-03T12:01:00Z',
+            proposedAction: {
+              actionType: 'RETRY_PAYMENT',
+              costMinorUnits: 0,
+              incentivePercent: 0
+            },
+            correlationId: '01CORR42'
+          },
+          governingPolicy: {
+            id: 1,
+            version: 1,
+            autonomyTier: 'T2',
+            isActive: true,
+            maxRetries: 3,
+            maxContactsPerCustomerPerWeek: 2,
+            dailyBudgetMinorUnits: 500000,
+            maxIncentivePercent: 10,
+            quietHoursStart: '22:00',
+            quietHoursEnd: '08:00',
+            timezone: 'Asia/Kolkata'
+          }
+        },
+        trace: {
+          primaryTraceRef: 'TRACE_01XYZ',
+          summary: {
+            caseId: 42,
+            traceRef: 'TRACE_01XYZ',
+            agentType: 'diagnosis',
+            status: 'success',
+            rationaleSummary: 'Identified transient insufficient funds',
+            recommendedAction: 'DELAYED_RETRY',
+            isAutonomous: false,
+            evaluatedTier: 'T2',
+            completedAt: '2026-09-03T12:00:45Z',
+            correlationId: '01CORR42'
+          },
+          traces: [
+            {
+              traceRef: 'TRACE_01XYZ',
+              agentType: 'diagnosis',
+              status: 'success',
+              durationMs: 380,
+              inputTokens: 250,
+              outputTokens: 90,
+              createdAt: '2026-09-03T12:00:30Z'
+            }
+          ]
+        }
+      };
+
+      mockedApi.get.mockResolvedValueOnce({ data: mockPayload });
+
+      const result = await getCaseExplainability(42);
+
+      expect(mockedApi.get).toHaveBeenCalledWith('/recovery/cases/42/explainability');
+      expect(result.case.id).toBe(42);
+      expect(result.case.recoverableAmountMinorUnits).toBe(85000);
+      expect(result.diagnosis?.category).toBe('INSUFFICIENT_FUNDS');
+      expect(result.decision?.primaryAction?.actionType).toBe('RETRY_PAYMENT');
+      expect(result.policy?.evaluation?.decision).toBe('REQUIRES_HUMAN');
+      expect(result.policy?.governingPolicy?.autonomyTier).toBe('T2');
+      expect(result.trace?.summary?.isAutonomous).toBe(false);
+    });
+
+    it('calls GET /recovery/cases/:idOrRef/explainability for string caseRef with nullable fields', async () => {
+      const mockPayload: UnifiedExplainabilityPayload = {
+        case: {
+          id: 43,
+          caseRef: 'CASE_REF_STR_001',
+          merchantId: 10,
+          orderId: 501,
+          transactionId: null,
+          status: 'detected',
+          recoverableAmountMinorUnits: 12000,
+          currency: 'INR',
+          originatingSignal: 'PAYMENT_FAILED',
+          failureCategory: null,
+          correlationId: '01CORR43',
+          createdAt: '2026-09-03T12:10:00Z',
+          updatedAt: '2026-09-03T12:10:00Z'
+        },
+        recoveryOutcome: {
+          status: 'detected',
+          isTerminal: false,
+          recoveredAmountMinorUnits: null,
+          terminalReason: null,
+          completedAt: null
+        },
+        diagnosis: null,
+        decision: null,
+        policy: null,
+        trace: null
+      };
+
+      mockedApi.get.mockResolvedValueOnce({ data: mockPayload });
+
+      const result = await getCaseExplainability('CASE_REF_STR_001');
+
+      expect(mockedApi.get).toHaveBeenCalledWith('/recovery/cases/CASE_REF_STR_001/explainability');
+      expect(result.case.caseRef).toBe('CASE_REF_STR_001');
+      expect(result.diagnosis).toBeNull();
+      expect(result.decision).toBeNull();
+      expect(result.policy).toBeNull();
+      expect(result.trace).toBeNull();
+    });
+  });
 });
+
