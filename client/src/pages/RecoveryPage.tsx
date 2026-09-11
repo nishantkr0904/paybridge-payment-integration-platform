@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Search,
   Shield,
+  TrendingUp,
   User,
   X,
   XCircle
@@ -25,12 +26,14 @@ import {
   getCaseTraces,
   executeOperatorAction,
   exportCaseAuditTrail,
+  getRecoveryAnalytics,
   type CaseStatus,
   type RecoveryCase,
   type CaseEvent,
   type AgentTrace,
   type OperatorActionType,
-  type PrioritizedCase
+  type PrioritizedCase,
+  type RecoveryAnalytics
 } from '../api/recovery';
 
 const STATUS_BADGES: Record<CaseStatus, { label: string; style: string }> = {
@@ -53,12 +56,152 @@ const STATUS_BADGES: Record<CaseStatus, { label: string; style: string }> = {
 
 const TERMINAL_STATUSES: CaseStatus[] = ['recovered', 'unrecovered', 'suppressed', 'expired', 'failed'];
 
-function formatMinorUnits(minorUnits: number, currency: string = 'INR'): string {
+export function formatMinorUnits(minorUnits: number, currency: string = 'INR'): string {
   const major = minorUnits / 100;
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: currency.toUpperCase()
   }).format(major);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Recovery Cockpit 4-Metric Situation Bar (Task 3 / §ADB-001)       */
+/* ------------------------------------------------------------------ */
+
+export interface SituationBarProps {
+  analytics?: RecoveryAnalytics | null;
+  isLoading?: boolean;
+  isError?: boolean;
+  awaitingApprovalCount?: number;
+  onRetry?: () => void;
+}
+
+export function SituationBar({
+  analytics,
+  isLoading = false,
+  isError = false,
+  awaitingApprovalCount = 0,
+  onRetry
+}: SituationBarProps) {
+  if (isLoading) {
+    return (
+      <div data-testid="situation-bar-skeleton" className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {[...Array(4)].map((_, i) => (
+          <div key={i} className="h-28 animate-pulse rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+            <div className="h-4 w-28 rounded bg-slate-200" />
+            <div className="mt-3 h-8 w-36 rounded bg-slate-200" />
+            <div className="mt-2 h-3 w-20 rounded bg-slate-100" />
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div data-testid="situation-bar-error" className="mb-6 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800 shadow-sm">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={18} className="text-red-600" />
+          <span className="font-medium">Failed to load recovery analytics metrics.</span>
+        </div>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded border border-red-300 bg-white px-3 py-1 text-xs font-semibold text-red-700 shadow-sm hover:bg-red-50"
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const currency = analytics?.currency || 'INR';
+  const recoveredRev = analytics?.revenue?.recoveredRevenueMinorUnits ?? 0;
+  const addressableVal = analytics?.revenue?.addressableMinorUnits ?? 0;
+  const recoveryRate = ((analytics?.rates?.revenueRecoveryRate ?? 0) * 100).toFixed(1);
+
+  return (
+    <div data-testid="recovery-situation-bar" className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      {/* 1. Recovered Revenue */}
+      <div data-testid="metric-recovered-revenue" className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-500">Recovered Revenue</span>
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-50 text-emerald-600">
+            <CheckCircle2 size={18} />
+          </div>
+        </div>
+        <div className="mt-2 text-2xl font-bold tracking-tight text-emerald-700">
+          {formatMinorUnits(recoveredRev, currency)}
+        </div>
+        <div className="mt-1 text-xs text-slate-400">Successfully recovered funds</div>
+      </div>
+
+      {/* 2. Value at Risk */}
+      <div data-testid="metric-value-at-risk" className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-500">Value at Risk</span>
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-slate-100 text-slate-600">
+            <Shield size={18} />
+          </div>
+        </div>
+        <div className="mt-2 text-2xl font-bold tracking-tight text-slate-900">
+          {formatMinorUnits(addressableVal, currency)}
+        </div>
+        <div className="mt-1 text-xs text-slate-400">Addressable failure volume</div>
+      </div>
+
+      {/* 3. Recovery Rate */}
+      <div data-testid="metric-recovery-rate" className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-500">Recovery Rate</span>
+          <div className="flex h-8 w-8 items-center justify-center rounded-md bg-indigo-50 text-indigo-600">
+            <TrendingUp size={18} />
+          </div>
+        </div>
+        <div className="mt-2 text-2xl font-bold tracking-tight text-indigo-700">
+          {recoveryRate}%
+        </div>
+        <div className="mt-1 text-xs text-slate-400">Revenue recovery efficiency</div>
+      </div>
+
+      {/* 4. Requires Attention / Awaiting Approval */}
+      <div
+        data-testid="metric-requires-attention"
+        className={`rounded-lg border p-4 shadow-sm ${
+          awaitingApprovalCount > 0
+            ? 'border-amber-300 bg-amber-50/50'
+            : 'border-slate-200 bg-white'
+        }`}
+      >
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-500">
+            Requires Attention
+          </span>
+          <div
+            className={`flex h-8 w-8 items-center justify-center rounded-md ${
+              awaitingApprovalCount > 0
+                ? 'bg-amber-100 text-amber-700 animate-pulse'
+                : 'bg-slate-100 text-slate-400'
+            }`}
+          >
+            <AlertTriangle size={18} />
+          </div>
+        </div>
+        <div
+          className={`mt-2 text-2xl font-bold tracking-tight ${
+            awaitingApprovalCount > 0 ? 'text-amber-900' : 'text-slate-900'
+          }`}
+        >
+          {awaitingApprovalCount}
+        </div>
+        <div className="mt-1 text-xs text-slate-500">
+          {awaitingApprovalCount === 1 ? '1 case awaiting approval' : `${awaitingApprovalCount} cases awaiting approval`}
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function RecoveryPage() {
@@ -81,11 +224,16 @@ export function RecoveryPage() {
   const [actionReason, setActionReason] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // Fetch Recovery Performance Analytics (§ADB-001 / ADB-002)
+  const analyticsQuery = useQuery({
+    queryKey: ['recovery-analytics'],
+    queryFn: () => getRecoveryAnalytics()
+  });
+
   // Fetch Prioritized Triage Queue
   const queueQuery = useQuery({
     queryKey: ['recovery-queue'],
-    queryFn: () => getPrioritizedQueue({ limit: 50 }),
-    enabled: viewMode === 'queue'
+    queryFn: () => getPrioritizedQueue({ limit: 50 })
   });
 
   // Fetch All Cases with Filter
@@ -98,6 +246,11 @@ export function RecoveryPage() {
       }),
     enabled: viewMode === 'all'
   });
+
+  // Requires Attention represents cases currently in awaiting_approval status
+  const awaitingApprovalCount =
+    (queueQuery.data?.queue ?? []).filter((q) => q.case.status === 'awaiting_approval').length ||
+    (casesQuery.data?.cases ?? []).filter((c) => c.status === 'awaiting_approval').length;
 
   // Fetch Selected Case Timeline
   const timelineQuery = useQuery({
@@ -127,6 +280,7 @@ export function RecoveryPage() {
       return executeOperatorAction(caseId, action, reason);
     },
     onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['recovery-analytics'] });
       queryClient.invalidateQueries({ queryKey: ['recovery-queue'] });
       queryClient.invalidateQueries({ queryKey: ['recovery-cases'] });
       queryClient.invalidateQueries({ queryKey: ['recovery-timeline', data.case.id] });
@@ -242,12 +396,13 @@ export function RecoveryPage() {
             <button
               type="button"
               onClick={() => {
+                queryClient.invalidateQueries({ queryKey: ['recovery-analytics'] });
                 queryClient.invalidateQueries({ queryKey: ['recovery-queue'] });
                 queryClient.invalidateQueries({ queryKey: ['recovery-cases'] });
               }}
               className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
             >
-              <RefreshCw size={14} className={queueQuery.isFetching || casesQuery.isFetching ? 'animate-spin' : ''} />
+              <RefreshCw size={14} className={analyticsQuery.isFetching || queueQuery.isFetching || casesQuery.isFetching ? 'animate-spin' : ''} />
               Refresh
             </button>
           </div>
@@ -256,6 +411,15 @@ export function RecoveryPage() {
 
       {/* Main Container */}
       <div className="mx-auto max-w-7xl px-6 py-8">
+        {/* Situation Bar (Task 3 / §ADB-001) */}
+        <SituationBar
+          analytics={analyticsQuery.data}
+          isLoading={analyticsQuery.isLoading}
+          isError={analyticsQuery.isError}
+          awaitingApprovalCount={awaitingApprovalCount}
+          onRetry={() => analyticsQuery.refetch()}
+        />
+
         {/* Controls Bar: View Toggle & Search */}
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
