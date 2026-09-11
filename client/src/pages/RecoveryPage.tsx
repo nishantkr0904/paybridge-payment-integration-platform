@@ -680,6 +680,52 @@ export function OperatorActionBanner({
   );
 }
 
+export interface NonTerminalAdminControlsProps {
+  caseItem: RecoveryCase;
+  canClose: boolean;
+  onOpenActionModal: (caseId: number, action: OperatorActionType, title: string) => void;
+}
+
+export function NonTerminalAdminControls({
+  caseItem,
+  canClose,
+  onOpenActionModal
+}: NonTerminalAdminControlsProps) {
+  if (TERMINAL_STATUSES.includes(caseItem.status) || caseItem.status === 'awaiting_approval') {
+    return null;
+  }
+
+  return (
+    <div className="border-b border-slate-200 bg-slate-50 px-6 py-2.5 flex items-center justify-between">
+      <span className="text-xs text-slate-500">
+        Autonomous workflow active in status: <strong>{caseItem.status}</strong>
+      </span>
+      <button
+        type="button"
+        data-testid="admin-close-btn"
+        disabled={!canClose}
+        onClick={() =>
+          canClose &&
+          onOpenActionModal(
+            caseItem.id,
+            'CLOSE',
+            'Close Case Administratively'
+          )
+        }
+        className={`inline-flex items-center gap-1 text-xs font-medium transition-colors ${
+          canClose
+            ? 'text-rose-600 hover:text-rose-800 cursor-pointer'
+            : 'text-slate-400 cursor-not-allowed opacity-60'
+        }`}
+        title={canClose ? 'Close case administratively' : 'Requires recovery:close permission'}
+      >
+        Close Case Administratively
+        {!canClose && <Lock size={12} className="ml-0.5 text-slate-400" />}
+      </button>
+    </div>
+  );
+}
+
 export interface AuditExportControlsProps {
   canExportAudit: boolean;
   isExporting: boolean;
@@ -844,6 +890,7 @@ export function RecoveryPage({ currentUser }: { currentUser?: AuthUser | null } 
       queryClient.invalidateQueries({ queryKey: ['recovery-cases'] });
       queryClient.invalidateQueries({ queryKey: ['recovery-timeline', data.case.id] });
       queryClient.invalidateQueries({ queryKey: ['recovery-explainability', data.case.id] });
+      queryClient.invalidateQueries({ queryKey: ['recovery-traces', data.case.id] });
       setSelectedCase(data.case);
       setActionModal(null);
       setActionReason('');
@@ -1239,33 +1286,11 @@ export function RecoveryPage({ currentUser }: { currentUser?: AuthUser | null } 
             )}
 
             {/* Non-terminal Administrative Controls */}
-            {!TERMINAL_STATUSES.includes(selectedCase.status) && selectedCase.status !== 'awaiting_approval' && (
-              <div className="border-b border-slate-200 bg-slate-50 px-6 py-2.5 flex items-center justify-between">
-                <span className="text-xs text-slate-500">Autonomous workflow active in status: <strong>{selectedCase.status}</strong></span>
-                <button
-                  type="button"
-                  data-testid="admin-close-btn"
-                  disabled={!canClose}
-                  onClick={() =>
-                    canClose &&
-                    handleOpenActionModal(
-                      selectedCase.id,
-                      'CLOSE',
-                      'Close Case Administratively'
-                    )
-                  }
-                  className={`inline-flex items-center gap-1 text-xs font-medium transition-colors ${
-                    canClose
-                      ? 'text-rose-600 hover:text-rose-800 cursor-pointer'
-                      : 'text-slate-400 cursor-not-allowed opacity-60'
-                  }`}
-                  title={canClose ? 'Close case administratively' : 'Requires recovery:close permission'}
-                >
-                  Close Case Administratively
-                  {!canClose && <Lock size={12} className="ml-0.5 text-slate-400" />}
-                </button>
-              </div>
-            )}
+            <NonTerminalAdminControls
+              caseItem={selectedCase}
+              canClose={canClose}
+              onOpenActionModal={handleOpenActionModal}
+            />
 
             {/* Drawer Body with Tabs */}
             <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">

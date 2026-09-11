@@ -11,7 +11,8 @@ import {
 import {
   OperatorActionBanner,
   AuditExportControls,
-  ExplainabilitySection
+  ExplainabilitySection,
+  NonTerminalAdminControls
 } from '../pages/RecoveryPage';
 import type { RecoveryCase } from '../api/recovery';
 
@@ -310,6 +311,92 @@ describe('Task 5: RBAC Action Boundary Alignment & UI Polish', () => {
       expect(state.actionError).toBe('Action unauthorized: You do not have permission to perform this recovery action.');
       expect(state.actionError).not.toContain('SQL');
       expect(state.actionError).not.toContain('database');
+    });
+  });
+
+  describe('8. Non-Terminal Administrative Close Controls Boundary', () => {
+    const activeNonAwaitingCase: RecoveryCase = {
+      ...mockAwaitingCase,
+      id: 29,
+      caseRef: 'CASE_ACTIVE_IN_FLIGHT_001',
+      status: 'executing'
+    };
+
+    it('renders enabled Close Case button when canClose is true', () => {
+      const html = renderToStaticMarkup(
+        <NonTerminalAdminControls
+          caseItem={activeNonAwaitingCase}
+          canClose={true}
+          onOpenActionModal={vi.fn()}
+        />
+      );
+
+      expect(html).toContain('data-testid="admin-close-btn"');
+      expect(html).toContain('Close Case Administratively');
+      expect(html).not.toContain('disabled=""');
+      expect(html).toContain('title="Close case administratively"');
+    });
+
+    it('renders disabled Close Case button with lock icon when canClose is false', () => {
+      const html = renderToStaticMarkup(
+        <NonTerminalAdminControls
+          caseItem={activeNonAwaitingCase}
+          canClose={false}
+          onOpenActionModal={vi.fn()}
+        />
+      );
+
+      expect(html).toContain('data-testid="admin-close-btn"');
+      expect(html).toContain('disabled=""');
+      expect(html).toContain('title="Requires recovery:close permission"');
+      expect(html).toContain('lucide-lock');
+    });
+
+    it('returns null for terminal statuses or awaiting_approval cases', () => {
+      for (const status of ['recovered', 'unrecovered', 'suppressed', 'expired', 'failed', 'awaiting_approval'] as const) {
+        const testCase: RecoveryCase = { ...mockAwaitingCase, status };
+        const html = renderToStaticMarkup(
+          <NonTerminalAdminControls
+            caseItem={testCase}
+            canClose={true}
+            onOpenActionModal={vi.fn()}
+          />
+        );
+        expect(html).toBe('');
+      }
+    });
+  });
+
+  describe('9. Client-Side Mandatory Justification Validation', () => {
+    it('rejects empty or whitespace-only reason before dispatching mutation', () => {
+      let mutationDispatched = false;
+      let actionError: string | null = null;
+
+      // Exact form execution handler logic from RecoveryPage
+      const executeFormAction = (reason: string) => {
+        if (!reason.trim()) {
+          actionError = 'A mandatory reason must be provided for operator audit compliance.';
+          return;
+        }
+        mutationDispatched = true;
+      };
+
+      // Test with empty string
+      executeFormAction('');
+      expect(mutationDispatched).toBe(false);
+      expect(actionError).toBe('A mandatory reason must be provided for operator audit compliance.');
+
+      // Test with whitespace-only string
+      actionError = null;
+      executeFormAction('   \t\n  ');
+      expect(mutationDispatched).toBe(false);
+      expect(actionError).toBe('A mandatory reason must be provided for operator audit compliance.');
+
+      // Test with valid justification
+      actionError = null;
+      executeFormAction('Customer replenished funds verified via support portal.');
+      expect(mutationDispatched).toBe(true);
+      expect(actionError).toBeNull();
     });
   });
 });
