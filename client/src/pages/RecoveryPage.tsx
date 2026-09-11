@@ -11,9 +11,11 @@ import {
   FileText,
   Layers,
   ListOrdered,
+  Lock,
   RefreshCw,
   Search,
   Shield,
+  ShieldAlert,
   Sparkles,
   TrendingUp,
   User,
@@ -21,6 +23,9 @@ import {
   XCircle
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
+import { useAuth } from '../providers/AuthProvider';
+import type { AuthUser } from '../api/auth';
+import { hasPermission } from '../utils/rbac';
 import {
   listRecoveryCases,
   getPrioritizedQueue,
@@ -216,6 +221,7 @@ export interface ExplainabilitySectionProps {
   payload?: UnifiedExplainabilityPayload | null;
   isLoading?: boolean;
   isError?: boolean;
+  canReadExplainability?: boolean;
   onRetry?: () => void;
 }
 
@@ -223,8 +229,18 @@ export function ExplainabilitySection({
   payload,
   isLoading = false,
   isError = false,
+  canReadExplainability = true,
   onRetry
 }: ExplainabilitySectionProps) {
+  if (canReadExplainability === false) {
+    return (
+      <div data-testid="explainability-unauthorized" className="rounded-lg border border-slate-200 bg-slate-50 p-4 text-xs text-slate-500 shadow-xs flex items-center gap-2">
+        <ShieldAlert size={16} className="text-slate-400 shrink-0" />
+        <span>Explainability intelligence requires the explainability:read permission.</span>
+      </div>
+    );
+  }
+
   if (isLoading) {
     return (
       <div data-testid="explainability-loading" className="rounded-lg border border-slate-200 bg-white p-4 shadow-xs space-y-4">
@@ -550,9 +566,189 @@ export function ExplainabilitySection({
   );
 }
 
-export function RecoveryPage() {
+export interface OperatorActionBannerProps {
+  caseItem: RecoveryCase;
+  canApprove: boolean;
+  canReject: boolean;
+  canClose: boolean;
+  onOpenActionModal: (caseId: number, action: OperatorActionType, title: string) => void;
+}
+
+export function OperatorActionBanner({
+  caseItem,
+  canApprove,
+  canReject,
+  canClose,
+  onOpenActionModal
+}: OperatorActionBannerProps) {
+  if (caseItem.status !== 'awaiting_approval') return null;
+
+  return (
+    <div className="border-b border-amber-200 bg-amber-50 px-6 py-4" data-testid="operator-action-banner">
+      <div className="flex items-start gap-3">
+        <AlertTriangle size={20} className="text-amber-600 mt-0.5 shrink-0" />
+        <div className="flex-1">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-amber-900">Human Operator Approval Required</h3>
+            <span className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-800">
+              Action Required
+            </span>
+          </div>
+          <p className="mt-1 text-xs text-amber-800">
+            The autonomous decision agent proposed a recovery action that exceeded merchant tier bounds or requires explicit authorization.
+          </p>
+          <div className="mt-3 flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              data-testid="action-approve-btn"
+              disabled={!canApprove}
+              onClick={() =>
+                canApprove &&
+                onOpenActionModal(
+                  caseItem.id,
+                  'APPROVE',
+                  'Approve Recovery Action & Execute'
+                )
+              }
+              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold shadow-xs transition-colors ${
+                canApprove
+                  ? 'bg-emerald-600 text-white hover:bg-emerald-700 cursor-pointer'
+                  : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+              }`}
+              title={canApprove ? 'Approve and execute proposed action' : 'Requires recovery:approve permission'}
+            >
+              <CheckCircle2 size={14} />
+              Approve & Execute
+              {!canApprove && <Lock size={12} className="ml-0.5 text-slate-400" />}
+            </button>
+
+            <button
+              type="button"
+              data-testid="action-reject-btn"
+              disabled={!canReject}
+              onClick={() =>
+                canReject &&
+                onOpenActionModal(
+                  caseItem.id,
+                  'REJECT',
+                  'Reject Action & Suppress'
+                )
+              }
+              className={`inline-flex items-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold shadow-xs transition-colors ${
+                canReject
+                  ? 'bg-amber-700 text-white hover:bg-amber-800 cursor-pointer'
+                  : 'bg-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+              }`}
+              title={canReject ? 'Reject proposal and suppress recovery' : 'Requires recovery:reject permission'}
+            >
+              <XCircle size={14} />
+              Reject Action
+              {!canReject && <Lock size={12} className="ml-0.5 text-slate-400" />}
+            </button>
+
+            <button
+              type="button"
+              data-testid="action-close-btn"
+              disabled={!canClose}
+              onClick={() =>
+                canClose &&
+                onOpenActionModal(
+                  caseItem.id,
+                  'CLOSE',
+                  'Close Case Administratively'
+                )
+              }
+              className={`inline-flex items-center gap-1.5 rounded-md border px-3.5 py-1.5 text-xs font-semibold shadow-2xs transition-colors ${
+                canClose
+                  ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 cursor-pointer'
+                  : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed opacity-60'
+              }`}
+              title={canClose ? 'Close case administratively' : 'Requires recovery:close permission'}
+            >
+              Close Case
+              {!canClose && <Lock size={12} className="ml-0.5 text-slate-400" />}
+            </button>
+          </div>
+          {!canApprove && !canReject && !canClose && (
+            <p className="mt-2 text-[11px] text-amber-700 font-medium" data-testid="unauthorized-actions-notice">
+              Your current role does not have permission to execute or reject recovery decisions. Contact an administrator to grant recovery operator permissions.
+            </p>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+export interface AuditExportControlsProps {
+  canExportAudit: boolean;
+  isExporting: boolean;
+  onExport: (format: 'csv' | 'json') => void;
+}
+
+export function AuditExportControls({
+  canExportAudit,
+  isExporting,
+  onExport
+}: AuditExportControlsProps) {
+  return (
+    <div className="flex items-center gap-2">
+      <button
+        type="button"
+        data-testid="export-csv-btn"
+        onClick={() => canExportAudit && onExport('csv')}
+        disabled={isExporting || !canExportAudit}
+        className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-semibold shadow-2xs transition-colors ${
+          canExportAudit
+            ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 cursor-pointer'
+            : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed opacity-60'
+        } disabled:opacity-50`}
+        title={canExportAudit ? 'Export certified audit trail as CSV (AUD-006)' : 'Requires audit:export permission'}
+      >
+        <Download size={13} />
+        Export CSV
+        {!canExportAudit && <Lock size={11} className="ml-0.5 text-slate-400" />}
+      </button>
+      <button
+        type="button"
+        data-testid="export-json-btn"
+        onClick={() => canExportAudit && onExport('json')}
+        disabled={isExporting || !canExportAudit}
+        className={`inline-flex items-center gap-1 rounded-md border px-2.5 py-1.5 text-xs font-semibold shadow-2xs transition-colors ${
+          canExportAudit
+            ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50 cursor-pointer'
+            : 'border-slate-200 bg-slate-100 text-slate-400 cursor-not-allowed opacity-60'
+        } disabled:opacity-50`}
+        title={canExportAudit ? 'Export certified audit trail as JSON (AUD-006)' : 'Requires audit:export permission'}
+      >
+        <Download size={13} />
+        Export JSON
+        {!canExportAudit && <Lock size={11} className="ml-0.5 text-slate-400" />}
+      </button>
+    </div>
+  );
+}
+
+export function RecoveryPage({ currentUser }: { currentUser?: AuthUser | null } = {}) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+
+  // Authentication & RBAC Capability Context
+  let contextUser: AuthUser | null = null;
+  try {
+    const auth = useAuth();
+    contextUser = auth.user;
+  } catch {
+    // Fallback when rendered without AuthProvider in unit tests
+  }
+  const user = currentUser !== undefined ? currentUser : contextUser;
+  const userRoles = user?.roles ?? [];
+
+  const canApprove = hasPermission(userRoles, 'recovery:approve');
+  const canReject = hasPermission(userRoles, 'recovery:reject');
+  const canClose = hasPermission(userRoles, 'recovery:close');
+  const canExportAudit = hasPermission(userRoles, 'audit:export');
+  const canReadExplainability = hasPermission(userRoles, 'explainability:read');
 
   // Navigation / Filter State
   const [viewMode, setViewMode] = useState<'queue' | 'all'>('queue');
@@ -609,14 +805,14 @@ export function RecoveryPage() {
   const tracesQuery = useQuery({
     queryKey: ['recovery-traces', selectedCase?.id],
     queryFn: () => getCaseTraces(selectedCase!.id),
-    enabled: !!selectedCase
+    enabled: !!selectedCase && canReadExplainability
   });
 
   // Fetch Selected Case Unified Explainability (Task 4 / BT-C4)
   const explainabilityQuery = useQuery({
     queryKey: ['recovery-explainability', selectedCase?.id],
     queryFn: () => getCaseExplainability(selectedCase!.id),
-    enabled: !!selectedCase
+    enabled: !!selectedCase && canReadExplainability
   });
 
   // Guard against stale data when transitioning between selected cases (Requirement 11)
@@ -654,13 +850,29 @@ export function RecoveryPage() {
       setActionError(null);
     },
     onError: (err: unknown) => {
-      const errorObj = err as { response?: { data?: { error?: { message?: string } } }; message?: string };
-      const msg = errorObj.response?.data?.error?.message || errorObj.message || 'Action execution failed.';
-      setActionError(msg);
+      const errorObj = err as {
+        response?: {
+          status?: number;
+          data?: { error?: { code?: string; message?: string } };
+        };
+        message?: string;
+      };
+      const status = errorObj.response?.status;
+      const code = errorObj.response?.data?.error?.code;
+      if (status === 403 || code === 'AUTH_FORBIDDEN') {
+        setActionError('Action unauthorized: You do not have permission to perform this recovery action.');
+      } else {
+        const msg = errorObj.response?.data?.error?.message || errorObj.message || 'Action execution failed.';
+        setActionError(msg);
+      }
     }
   });
 
   const handleOpenActionModal = (caseId: number, action: OperatorActionType, title: string) => {
+    if (action === 'APPROVE' && !canApprove) return;
+    if (action === 'REJECT' && !canReject) return;
+    if (action === 'CLOSE' && !canClose) return;
+
     setActionError(null);
     setActionReason('');
     setActionModal({ isOpen: true, caseId, action, title });
@@ -673,6 +885,19 @@ export function RecoveryPage() {
       return;
     }
     if (actionModal) {
+      if (actionModal.action === 'APPROVE' && !canApprove) {
+        setActionError('Action unauthorized: Your account lacks recovery:approve permission.');
+        return;
+      }
+      if (actionModal.action === 'REJECT' && !canReject) {
+        setActionError('Action unauthorized: Your account lacks recovery:reject permission.');
+        return;
+      }
+      if (actionModal.action === 'CLOSE' && !canClose) {
+        setActionError('Action unauthorized: Your account lacks recovery:close permission.');
+        return;
+      }
+
       actionMutation.mutate({
         caseId: actionModal.caseId,
         action: actionModal.action,
@@ -685,6 +910,10 @@ export function RecoveryPage() {
 
   const handleExport = async (format: 'csv' | 'json') => {
     if (!selectedCase) return;
+    if (!canExportAudit) {
+      alert('Action unauthorized: Requires audit:export permission.');
+      return;
+    }
     try {
       setIsExporting(true);
       const result = await exportCaseAuditTrail(selectedCase.id, format);
@@ -698,9 +927,16 @@ export function RecoveryPage() {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
     } catch (err: unknown) {
-      const errorObj = err as { response?: { data?: { error?: { message?: string } } }; message?: string };
-      const msg = errorObj.response?.data?.error?.message || errorObj.message || 'Audit export failed.';
-      alert(`Export error: ${msg}`);
+      const errorObj = err as {
+        response?: { status?: number; data?: { error?: { message?: string } } };
+        message?: string;
+      };
+      if (errorObj.response?.status === 403) {
+        alert('Action unauthorized: You do not have permission to export audit trails.');
+      } else {
+        const msg = errorObj.response?.data?.error?.message || errorObj.message || 'Audit export failed.';
+        alert(`Export error: ${msg}`);
+      }
     } finally {
       setIsExporting(false);
     }
@@ -976,26 +1212,11 @@ export function RecoveryPage() {
                 <h2 className="font-mono text-lg font-bold text-slate-900">{selectedCase.caseRef}</h2>
               </div>
               <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => handleExport('csv')}
-                  disabled={isExporting}
-                  className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 disabled:opacity-50"
-                  title="Export certified audit trail as CSV (AUD-006)"
-                >
-                  <Download size={13} />
-                  Export CSV
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleExport('json')}
-                  disabled={isExporting}
-                  className="inline-flex items-center gap-1 rounded-md border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-700 shadow-2xs hover:bg-slate-50 disabled:opacity-50"
-                  title="Export certified audit trail as JSON (AUD-006)"
-                >
-                  <Download size={13} />
-                  Export JSON
-                </button>
+                <AuditExportControls
+                  canExportAudit={canExportAudit}
+                  isExporting={isExporting}
+                  onExport={handleExport}
+                />
                 <button
                   type="button"
                   onClick={() => setSelectedCase(null)}
@@ -1008,60 +1229,13 @@ export function RecoveryPage() {
 
             {/* Operator Decision Banner & Action Buttons */}
             {selectedCase.status === 'awaiting_approval' && (
-              <div className="border-b border-amber-200 bg-amber-50 px-6 py-4">
-                <div className="flex items-start gap-3">
-                  <AlertTriangle size={20} className="text-amber-600 mt-0.5 shrink-0" />
-                  <div>
-                    <h3 className="text-sm font-bold text-amber-900">Human Operator Approval Required</h3>
-                    <p className="mt-1 text-xs text-amber-800">
-                      The autonomous decision agent proposed a recovery action that exceeded merchant tier bounds or requires explicit authorization.
-                    </p>
-                    <div className="mt-3 flex items-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleOpenActionModal(
-                            selectedCase.id,
-                            'APPROVE',
-                            'Approve Recovery Action & Execute'
-                          )
-                        }
-                        className="inline-flex items-center gap-1.5 rounded-md bg-emerald-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
-                      >
-                        <CheckCircle2 size={14} />
-                        Approve & Execute
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleOpenActionModal(
-                            selectedCase.id,
-                            'REJECT',
-                            'Reject Action & Suppress'
-                          )
-                        }
-                        className="inline-flex items-center gap-1.5 rounded-md bg-amber-700 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-amber-800"
-                      >
-                        <XCircle size={14} />
-                        Reject Action
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          handleOpenActionModal(
-                            selectedCase.id,
-                            'CLOSE',
-                            'Close Case Administratively'
-                          )
-                        }
-                        className="inline-flex items-center gap-1.5 rounded-md border border-slate-300 bg-white px-3.5 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50"
-                      >
-                        Close Case
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
+              <OperatorActionBanner
+                caseItem={selectedCase}
+                canApprove={canApprove}
+                canReject={canReject}
+                canClose={canClose}
+                onOpenActionModal={handleOpenActionModal}
+              />
             )}
 
             {/* Non-terminal Administrative Controls */}
@@ -1070,16 +1244,25 @@ export function RecoveryPage() {
                 <span className="text-xs text-slate-500">Autonomous workflow active in status: <strong>{selectedCase.status}</strong></span>
                 <button
                   type="button"
+                  data-testid="admin-close-btn"
+                  disabled={!canClose}
                   onClick={() =>
+                    canClose &&
                     handleOpenActionModal(
                       selectedCase.id,
                       'CLOSE',
                       'Close Case Administratively'
                     )
                   }
-                  className="text-xs font-medium text-rose-600 hover:text-rose-800"
+                  className={`inline-flex items-center gap-1 text-xs font-medium transition-colors ${
+                    canClose
+                      ? 'text-rose-600 hover:text-rose-800 cursor-pointer'
+                      : 'text-slate-400 cursor-not-allowed opacity-60'
+                  }`}
+                  title={canClose ? 'Close case administratively' : 'Requires recovery:close permission'}
                 >
                   Close Case Administratively
+                  {!canClose && <Lock size={12} className="ml-0.5 text-slate-400" />}
                 </button>
               </div>
             )}
@@ -1103,7 +1286,11 @@ export function RecoveryPage() {
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <span className="text-xs text-slate-400">Current Status</span>
                   <div className="mt-1">
-                    <span className={`inline-flex rounded-full border px-2 py-0.5 text-xs ${STATUS_BADGES[selectedCase.status]?.style}`}>
+                    <span
+                      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${
+                        STATUS_BADGES[selectedCase.status]?.style || 'bg-slate-100 text-slate-700'
+                      }`}
+                    >
                       {STATUS_BADGES[selectedCase.status]?.label || selectedCase.status}
                     </span>
                   </div>
@@ -1115,6 +1302,7 @@ export function RecoveryPage() {
                 payload={currentExplainability}
                 isLoading={isExplainabilityLoading}
                 isError={explainabilityQuery.isError && !isExplainabilityStale}
+                canReadExplainability={canReadExplainability}
                 onRetry={() => explainabilityQuery.refetch()}
               />
 
@@ -1127,6 +1315,8 @@ export function RecoveryPage() {
 
                 {tracesQuery.isLoading ? (
                   <p className="py-4 text-xs text-slate-400">Loading agent reasoning transcript...</p>
+                ) : !canReadExplainability ? (
+                  <p className="py-4 text-xs text-slate-400">Reasoning traces require the explainability:read permission.</p>
                 ) : (tracesQuery.data?.traces ?? []).length === 0 ? (
                   <p className="py-4 text-xs text-slate-400">No agent reasoning traces recorded for this case.</p>
                 ) : (
@@ -1233,7 +1423,7 @@ export function RecoveryPage() {
 
       {/* Operator Action Modal */}
       {actionModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
+        <div data-testid="operator-action-modal" className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4">
           <div className="w-full max-w-md rounded-lg bg-white p-6 shadow-xl animate-in zoom-in-95">
             <h3 className="text-base font-bold text-slate-900">{actionModal.title}</h3>
             <p className="mt-1 text-xs text-slate-500">
