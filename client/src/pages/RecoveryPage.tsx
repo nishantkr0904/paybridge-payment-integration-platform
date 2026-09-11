@@ -8,11 +8,13 @@ import {
   ChevronRight,
   Clock,
   Download,
+  FileText,
   Layers,
   ListOrdered,
   RefreshCw,
   Search,
   Shield,
+  Sparkles,
   TrendingUp,
   User,
   X,
@@ -27,13 +29,15 @@ import {
   executeOperatorAction,
   exportCaseAuditTrail,
   getRecoveryAnalytics,
+  getCaseExplainability,
   type CaseStatus,
   type RecoveryCase,
   type CaseEvent,
   type AgentTrace,
   type OperatorActionType,
   type PrioritizedCase,
-  type RecoveryAnalytics
+  type RecoveryAnalytics,
+  type UnifiedExplainabilityPayload
 } from '../api/recovery';
 
 const STATUS_BADGES: Record<CaseStatus, { label: string; style: string }> = {
@@ -204,6 +208,348 @@ export function SituationBar({
   );
 }
 
+/* ------------------------------------------------------------------ */
+/*  Case Explainability & Action Proposal Section (Task 4 / BT-C4)    */
+/* ------------------------------------------------------------------ */
+
+export interface ExplainabilitySectionProps {
+  payload?: UnifiedExplainabilityPayload | null;
+  isLoading?: boolean;
+  isError?: boolean;
+  onRetry?: () => void;
+}
+
+export function ExplainabilitySection({
+  payload,
+  isLoading = false,
+  isError = false,
+  onRetry
+}: ExplainabilitySectionProps) {
+  if (isLoading) {
+    return (
+      <div data-testid="explainability-loading" className="rounded-lg border border-slate-200 bg-white p-4 shadow-xs space-y-4">
+        <div className="flex items-center gap-2 border-b border-slate-200 pb-3">
+          <div className="h-5 w-5 rounded-full bg-slate-200 animate-pulse" />
+          <div className="h-4 w-48 rounded bg-slate-200 animate-pulse" />
+        </div>
+        <div className="space-y-3">
+          <div className="h-20 rounded-md bg-slate-100 animate-pulse" />
+          <div className="h-20 rounded-md bg-slate-100 animate-pulse" />
+          <div className="h-20 rounded-md bg-slate-100 animate-pulse" />
+        </div>
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div data-testid="explainability-error" className="rounded-lg border border-red-200 bg-red-50 p-4 text-xs text-red-800 flex items-center justify-between shadow-xs">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={16} className="text-red-600 shrink-0" />
+          <span>Failed to load explainability intelligence for this case.</span>
+        </div>
+        {onRetry && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="rounded border border-red-300 bg-white px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+          >
+            Retry
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  if (!payload) {
+    return (
+      <div data-testid="explainability-empty" className="rounded-lg border border-slate-200 bg-white p-4 text-xs text-slate-500 shadow-xs">
+        No explainability data available for this case.
+      </div>
+    );
+  }
+
+  const { case: caseInfo, recoveryOutcome, diagnosis, decision, policy } = payload;
+  const currency = caseInfo.currency || 'INR';
+
+  return (
+    <div data-testid="case-explainability-section" className="rounded-lg border border-slate-200 bg-white p-4 shadow-xs space-y-4">
+      <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+        <div className="flex items-center gap-2">
+          <Sparkles size={18} className="text-indigo-600" />
+          <h3 className="text-sm font-bold text-slate-900">Unified Recovery Explainability</h3>
+        </div>
+        <span className="text-[11px] font-mono font-medium text-slate-400">
+          Ref: {caseInfo.caseRef}
+        </span>
+      </div>
+
+      {/* 1. What Happened: Originating Signal & Failure Context */}
+      <div data-testid="explainability-what-happened" className="rounded-md border border-slate-200 bg-slate-50/70 p-3.5 space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wider text-slate-500">1. Failure Context</span>
+          <span className="rounded bg-slate-200 px-2 py-0.5 font-mono text-[11px] text-slate-700">
+            {caseInfo.originatingSignal}
+          </span>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4 pt-1">
+          <div>
+            <span className="text-slate-400 block text-[11px]">Category</span>
+            <span className="font-semibold text-slate-800">{caseInfo.failureCategory || 'Unclassified'}</span>
+          </div>
+          <div>
+            <span className="text-slate-400 block text-[11px]">Recoverable Amount</span>
+            <span className="font-semibold text-slate-800">{formatMinorUnits(caseInfo.recoverableAmountMinorUnits, currency)}</span>
+          </div>
+          <div>
+            <span className="text-slate-400 block text-[11px]">Order &amp; Transaction</span>
+            <span className="font-mono text-slate-700">
+              #{caseInfo.orderId} {caseInfo.transactionId ? `· Tx #${caseInfo.transactionId}` : ''}
+            </span>
+          </div>
+          <div>
+            <span className="text-slate-400 block text-[11px]">Outcome State</span>
+            <span className="font-semibold text-slate-800">
+              {recoveryOutcome.isTerminal
+                ? (recoveryOutcome.terminalReason || recoveryOutcome.status)
+                : `Active (${recoveryOutcome.status})`}
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. What the Recovery Agent Concluded: Diagnosis & Root Cause */}
+      <div data-testid="explainability-diagnosis" className="rounded-md border border-indigo-100 bg-indigo-50/30 p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wider text-indigo-900">2. Agent Diagnostic Conclusion</span>
+          {diagnosis && (
+            <span className="rounded-full bg-indigo-100 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-800">
+              {Math.round(diagnosis.confidence * 100)}% confidence
+            </span>
+          )}
+        </div>
+
+        {!diagnosis ? (
+          <p data-testid="diagnosis-not-available" className="text-xs text-slate-500 italic py-1">
+            Diagnosis data not available for this case.
+          </p>
+        ) : (
+          <div className="space-y-2 text-xs">
+            <div className="rounded border border-indigo-100 bg-white p-2.5">
+              <span className="text-[11px] font-bold uppercase tracking-wider text-indigo-500 block mb-0.5">Root Cause</span>
+              <p className="font-semibold text-slate-900">{diagnosis.rootCause}</p>
+              {diagnosis.explanation && (
+                <p className="mt-1 text-slate-600 text-[11px] leading-relaxed">{diagnosis.explanation}</p>
+              )}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 pt-1">
+              <div>
+                <span className="text-slate-400 block text-[11px]">Classification</span>
+                <span className="font-medium text-slate-800">{diagnosis.category} ({diagnosis.reasonCode})</span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[11px]">Recoverability</span>
+                <span className={`font-semibold ${diagnosis.recoverable ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {diagnosis.recoverable ? 'Recoverable' : 'Non-Recoverable'}
+                </span>
+              </div>
+              <div>
+                <span className="text-slate-400 block text-[11px]">Recommended Strategy</span>
+                <span className="font-medium text-slate-800">{diagnosis.recommendedStrategy}</span>
+              </div>
+            </div>
+
+            {diagnosis.contributingFactors?.length > 0 && (
+              <div className="pt-1">
+                <span className="text-slate-400 block text-[11px] mb-1">Contributing Factors</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {diagnosis.contributingFactors.map((factor, idx) => (
+                    <span key={idx} className="rounded bg-white border border-indigo-100 px-2 py-0.5 text-[11px] text-slate-700">
+                      {factor}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {diagnosis.evidence?.length > 0 && (
+              <div className="pt-1">
+                <span className="text-slate-400 block text-[11px] mb-1">Evidence Markers</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {diagnosis.evidence.map((ev, idx) => (
+                    <span key={idx} className="rounded bg-slate-100 font-mono text-[10px] text-slate-600 px-1.5 py-0.5">
+                      {ev}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {diagnosis.provenance && (
+              <div className="text-[10px] text-slate-400 pt-1 border-t border-indigo-100/60 flex items-center justify-between">
+                <span>Source: {diagnosis.provenance.source} · Model: {diagnosis.provenance.modelId || 'deterministic'}</span>
+                <span>Latency: {diagnosis.provenance.latencyMs}ms</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 3. What Action It Proposed: Decision Plan & Parameters */}
+      <div data-testid="explainability-decision" className="rounded-md border border-emerald-100 bg-emerald-50/30 p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wider text-emerald-900">3. Proposed Recovery Action</span>
+          {decision?.primaryAction && (
+            <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-[11px] font-semibold text-emerald-800">
+              {decision.primaryAction.actionType}
+            </span>
+          )}
+        </div>
+
+        {!decision ? (
+          <p data-testid="decision-not-available" className="text-xs text-slate-500 italic py-1">
+            Decision plan not available for this case.
+          </p>
+        ) : (
+          <div className="space-y-2 text-xs">
+            {decision.planRationale && (
+              <div className="rounded border border-emerald-100 bg-white p-2.5">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-600 block mb-0.5">Plan Rationale</span>
+                <p className="text-slate-800">{decision.planRationale}</p>
+              </div>
+            )}
+
+            {decision.primaryAction && (
+              <div className="rounded border border-slate-200 bg-white p-2.5 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-900">Tool: {decision.primaryAction.toolName}</span>
+                  <span className="text-[11px] text-slate-500">
+                    Delay: {decision.primaryAction.scheduledDelaySeconds > 0 ? `${decision.primaryAction.scheduledDelaySeconds}s` : 'Immediate'}
+                  </span>
+                </div>
+                {decision.primaryAction.rationale && (
+                  <p className="text-slate-600 text-[11px]">{decision.primaryAction.rationale}</p>
+                )}
+                <div className="grid grid-cols-2 gap-2 text-[11px] pt-1 border-t border-slate-100">
+                  <div>
+                    <span className="text-slate-400">Execution Cost:</span>{' '}
+                    <strong className="text-slate-800">{formatMinorUnits(decision.primaryAction.costMinorUnits, currency)}</strong>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Incentive Offer:</span>{' '}
+                    <strong className="text-slate-800">
+                      {decision.primaryAction.incentivePercent > 0 ? `${decision.primaryAction.incentivePercent}%` : 'None'}
+                    </strong>
+                  </div>
+                </div>
+                {Object.keys(decision.primaryAction.parameters || {}).length > 0 && (
+                  <div className="pt-1">
+                    <span className="text-slate-400 block text-[10px] mb-0.5">Action Parameters:</span>
+                    <pre className="rounded bg-slate-50 p-1.5 font-mono text-[10px] text-slate-600 whitespace-pre-wrap">
+                      {JSON.stringify(decision.primaryAction.parameters, null, 2)}
+                    </pre>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {decision.provenance && (
+              <div className="text-[10px] text-slate-400 pt-1 border-t border-emerald-100/60 flex items-center justify-between">
+                <span>Source: {decision.provenance.source} · Latency: {decision.provenance.latencyMs}ms</span>
+                <span>Cost Ordering Respected: {decision.costOrderingRespect ? 'Yes' : 'No'}</span>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* 4. Why Policy Allowed or Required Human Review */}
+      <div data-testid="explainability-policy" className="rounded-md border border-amber-200 bg-amber-50/40 p-3.5 space-y-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-xs font-bold uppercase tracking-wider text-amber-900">
+            4. Governing Policy &amp; Autonomy Evaluation
+          </span>
+          {policy?.evaluation && (
+            <span
+              className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${
+                policy.evaluation.decision === 'REQUIRES_HUMAN'
+                  ? 'bg-amber-200 text-amber-900'
+                  : policy.evaluation.decision === 'APPROVED'
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : 'bg-rose-100 text-rose-800'
+              }`}
+            >
+              {policy.evaluation.decision === 'REQUIRES_HUMAN'
+                ? 'Requires Human Review'
+                : policy.evaluation.decision === 'APPROVED'
+                ? 'Autonomously Approved'
+                : 'Policy Rejected'}
+            </span>
+          )}
+        </div>
+
+        {!policy || (!policy.evaluation && !policy.governingPolicy) ? (
+          <p data-testid="policy-not-available" className="text-xs text-slate-500 italic py-1">
+            Policy evaluation not available for this case.
+          </p>
+        ) : (
+          <div className="space-y-2 text-xs">
+            {policy.evaluation && (
+              <div className="rounded border border-amber-200 bg-white p-2.5 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-slate-900">
+                    Rule: {policy.evaluation.ruleId}
+                  </span>
+                  <span className="text-[11px] font-medium text-slate-500">
+                    Tier {policy.evaluation.evaluatedTier}
+                  </span>
+                </div>
+                {policy.evaluation.message && (
+                  <p className="text-slate-700 text-[11px]">{policy.evaluation.message}</p>
+                )}
+                <div className="text-[10px] text-slate-400 pt-1">
+                  Reason Code: <span className="font-mono text-slate-600">{policy.evaluation.reasonCode}</span>
+                </div>
+              </div>
+            )}
+
+            {policy.governingPolicy && (
+              <div className="rounded border border-slate-200 bg-white p-2.5">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-500 block mb-1">
+                  Active Policy Bounds (Tier {policy.governingPolicy.autonomyTier})
+                </span>
+                <div className="grid grid-cols-2 gap-2 text-[11px] sm:grid-cols-4 text-slate-700">
+                  <div>
+                    <span className="text-slate-400 block text-[10px]">Max Retries</span>
+                    <span>{policy.governingPolicy.maxRetries}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px]">Max Incentive</span>
+                    <span>{policy.governingPolicy.maxIncentivePercent}%</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px]">Daily Budget</span>
+                    <span>{formatMinorUnits(policy.governingPolicy.dailyBudgetMinorUnits, currency)}</span>
+                  </div>
+                  <div>
+                    <span className="text-slate-400 block text-[10px]">Quiet Hours</span>
+                    <span>
+                      {policy.governingPolicy.quietHoursStart && policy.governingPolicy.quietHoursEnd
+                        ? `${policy.governingPolicy.quietHoursStart} - ${policy.governingPolicy.quietHoursEnd}`
+                        : 'None'}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function RecoveryPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -266,6 +612,23 @@ export function RecoveryPage() {
     enabled: !!selectedCase
   });
 
+  // Fetch Selected Case Unified Explainability (Task 4 / BT-C4)
+  const explainabilityQuery = useQuery({
+    queryKey: ['recovery-explainability', selectedCase?.id],
+    queryFn: () => getCaseExplainability(selectedCase!.id),
+    enabled: !!selectedCase
+  });
+
+  // Guard against stale data when transitioning between selected cases (Requirement 11)
+  const isExplainabilityStale =
+    !!selectedCase &&
+    explainabilityQuery.data !== undefined &&
+    explainabilityQuery.data.case.id !== selectedCase.id;
+
+  const currentExplainability = isExplainabilityStale ? null : explainabilityQuery.data;
+  const isExplainabilityLoading =
+    explainabilityQuery.isLoading || (explainabilityQuery.isFetching && isExplainabilityStale);
+
   // Operator Action Mutation
   const actionMutation = useMutation({
     mutationFn: async ({
@@ -284,6 +647,7 @@ export function RecoveryPage() {
       queryClient.invalidateQueries({ queryKey: ['recovery-queue'] });
       queryClient.invalidateQueries({ queryKey: ['recovery-cases'] });
       queryClient.invalidateQueries({ queryKey: ['recovery-timeline', data.case.id] });
+      queryClient.invalidateQueries({ queryKey: ['recovery-explainability', data.case.id] });
       setSelectedCase(data.case);
       setActionModal(null);
       setActionReason('');
@@ -399,10 +763,15 @@ export function RecoveryPage() {
                 queryClient.invalidateQueries({ queryKey: ['recovery-analytics'] });
                 queryClient.invalidateQueries({ queryKey: ['recovery-queue'] });
                 queryClient.invalidateQueries({ queryKey: ['recovery-cases'] });
+                if (selectedCase) {
+                  queryClient.invalidateQueries({ queryKey: ['recovery-explainability', selectedCase.id] });
+                  queryClient.invalidateQueries({ queryKey: ['recovery-timeline', selectedCase.id] });
+                  queryClient.invalidateQueries({ queryKey: ['recovery-traces', selectedCase.id] });
+                }
               }}
               className="inline-flex items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-50"
             >
-              <RefreshCw size={14} className={analyticsQuery.isFetching || queueQuery.isFetching || casesQuery.isFetching ? 'animate-spin' : ''} />
+              <RefreshCw size={14} className={analyticsQuery.isFetching || queueQuery.isFetching || casesQuery.isFetching || explainabilityQuery.isFetching ? 'animate-spin' : ''} />
               Refresh
             </button>
           </div>
@@ -740,6 +1109,14 @@ export function RecoveryPage() {
                   </div>
                 </div>
               </div>
+
+              {/* Unified Explainability Section (Task 4 / BT-C4 / BC-7.5) */}
+              <ExplainabilitySection
+                payload={currentExplainability}
+                isLoading={isExplainabilityLoading}
+                isError={explainabilityQuery.isError && !isExplainabilityStale}
+                onRetry={() => explainabilityQuery.refetch()}
+              />
 
               {/* AI Reasoning Trace Transcript (AI-007 / RDB-003) */}
               <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-xs">
