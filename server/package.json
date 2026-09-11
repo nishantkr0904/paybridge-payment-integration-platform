@@ -25,7 +25,8 @@
     "db:status": "tsx src/database/cli.ts status",
     "db:baseline": "tsx src/database/cli.ts baseline",
     "demo:llm": "tsx src/demo/cli.ts",
-    "seed:operator": "tsx src/demo/seed-operator-demo.ts"
+    "seed:operator": "tsx src/demo/seed-operator-demo.ts",
+    "seed:developer": "tsx src/demo/seed-developer-demo.ts"
   },
   "dependencies": {
     "amqplib": "^2.0.1",
