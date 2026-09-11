@@ -2,6 +2,7 @@ import net from 'node:net';
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../../middleware/authenticate.js';
+import { requirePermission, hasPermission } from '../../middleware/authorize.js';
 import { env } from '../../config/env.js';
 import {
   isAllowedInternalTarget,
@@ -89,33 +90,44 @@ webhookRouter.post('/test-listener', (req, res) => {
 });
 
 // ==========================================
-// PROTECTED MERCHANT ROUTES
+// PROTECTED MERCHANT ROUTES (Auth & RBAC)
 // ==========================================
 webhookRouter.use(authenticate);
 
-/* POST /api/webhooks/endpoints — Add a new webhook URL */
-webhookRouter.post('/endpoints', async (req, res, next) => {
+/* POST /api/webhooks/endpoints — Add a new webhook URL (requires webhook:manage) */
+webhookRouter.post('/endpoints', requirePermission('webhook:manage'), async (req, res, next) => {
   try {
     const { url } = addEndpointSchema.parse(req.body);
     const endpoint = await addWebhookEndpoint(req.user!.id, url);
-    res.status(201).json(endpoint);
+    const canReadSecret = hasPermission(req.user!.roles, 'webhook:secret:read');
+    const sanitizedEndpoint = canReadSecret
+      ? endpoint
+      : { ...endpoint, secret: 'whsec_••••••••••••••••••••••••' };
+    res.status(201).json(sanitizedEndpoint);
   } catch (error) {
     next(error);
   }
 });
 
-/* GET /api/webhooks/endpoints — List configured webhooks */
-webhookRouter.get('/endpoints', async (req, res, next) => {
+/* GET /api/webhooks/endpoints — List configured webhooks (requires webhook:read) */
+webhookRouter.get('/endpoints', requirePermission('webhook:read'), async (req, res, next) => {
   try {
     const endpoints = await listWebhookEndpoints(req.user!.id);
-    res.json({ endpoints });
+    const canReadSecret = hasPermission(req.user!.roles, 'webhook:secret:read');
+    const sanitizedEndpoints = canReadSecret
+      ? endpoints
+      : endpoints.map((ep) => ({
+          ...ep,
+          secret: 'whsec_••••••••••••••••••••••••'
+        }));
+    res.json({ endpoints: sanitizedEndpoints });
   } catch (error) {
     next(error);
   }
 });
 
-/* GET /api/webhooks/deliveries — View recent delivery attempts */
-webhookRouter.get('/deliveries', async (req, res, next) => {
+/* GET /api/webhooks/deliveries — View recent delivery attempts (requires webhook:read) */
+webhookRouter.get('/deliveries', requirePermission('webhook:read'), async (req, res, next) => {
   try {
     const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 50;
     const deliveries = await listWebhookDeliveries(req.user!.id, limit);

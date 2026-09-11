@@ -2,10 +2,13 @@ import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import {
+  DeveloperPortalAccessDenied,
+  WebhookRegistrationForm,
+  WebhookEndpointsTable,
   DeliveryInspectionDrawer,
   extractWebhookErrorMessage
 } from '../pages/DeveloperPage';
-import type { WebhookDelivery } from '../api/webhook';
+import type { WebhookDelivery, WebhookEndpoint } from '../api/webhook';
 
 describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () => {
   const mockDeliveries: WebhookDelivery[] = [
@@ -240,6 +243,141 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
     it('falls back to default message when error is completely empty', () => {
       const msg = extractWebhookErrorMessage({});
       expect(msg).toBe('Failed to add webhook endpoint');
+    });
+  });
+
+  describe('4. Developer Portal Access Denied Component (RBAC: webhook:read)', () => {
+    it('renders unauthorized banner with data-testid="developer-portal-unauthorized"', () => {
+      const markup = renderToStaticMarkup(<DeveloperPortalAccessDenied />);
+
+      expect(markup).toContain('data-testid="developer-portal-unauthorized"');
+      expect(markup).toContain('Developer Portal Access Restricted');
+      expect(markup).toContain('webhook:read');
+    });
+  });
+
+  describe('5. Webhook Registration Form RBAC Boundaries (RBAC: webhook:manage)', () => {
+    it('renders enabled input and button when user has webhook:manage permission', () => {
+      const markup = renderToStaticMarkup(
+        <WebhookRegistrationForm
+          url="https://merchant.example.com/webhook"
+          onUrlChange={() => {}}
+          onSubmit={() => {}}
+          isPending={false}
+          canManageWebhooks={true}
+          formError={null}
+        />
+      );
+
+      expect(markup).toContain('https://merchant.example.com/webhook');
+      expect(markup).toContain('Add Endpoint');
+      expect(markup).not.toContain('disabled=""');
+      expect(markup).not.toContain('data-testid="webhook-manage-unauthorized-notice"');
+    });
+
+    it('renders disabled input, disabled button, and unauthorized notice when user lacks webhook:manage permission', () => {
+      const markup = renderToStaticMarkup(
+        <WebhookRegistrationForm
+          url=""
+          onUrlChange={() => {}}
+          onSubmit={() => {}}
+          isPending={false}
+          canManageWebhooks={false}
+          formError={null}
+        />
+      );
+
+      expect(markup).toContain('disabled=""');
+      expect(markup).toContain('data-testid="webhook-manage-unauthorized-notice"');
+      expect(markup).toContain('webhook:manage');
+    });
+
+    it('renders form error message when formError is provided', () => {
+      const markup = renderToStaticMarkup(
+        <WebhookRegistrationForm
+          url="http://insecure.internal"
+          onUrlChange={() => {}}
+          onSubmit={() => {}}
+          isPending={false}
+          canManageWebhooks={true}
+          formError="Webhook URL must use HTTPS for public endpoints."
+        />
+      );
+
+      expect(markup).toContain('data-testid="webhook-form-error"');
+      expect(markup).toContain('Webhook URL must use HTTPS for public endpoints.');
+    });
+  });
+
+  describe('6. Webhook Endpoints Table RBAC Boundaries (RBAC: webhook:secret:read)', () => {
+    const mockEndpoints: WebhookEndpoint[] = [
+      {
+        id: 13,
+        merchantId: 1,
+        url: 'https://webhook.site/paybridge-demo-ep1',
+        secret: 'whsec_demo_secret_xyz1234567890abcdef',
+        isActive: true,
+        createdAt: '2026-09-11T12:00:00.000Z',
+        updatedAt: '2026-09-11T12:00:00.000Z'
+      }
+    ];
+
+    it('renders Reveal button and reveals secret when canReadSecret is true and toggled', () => {
+      // Hidden state
+      const markupHidden = renderToStaticMarkup(
+        <WebhookEndpointsTable
+          endpoints={mockEndpoints}
+          canReadSecret={true}
+          showSecret={{ 13: false }}
+          onToggleSecret={() => {}}
+        />
+      );
+      expect(markupHidden).toContain('whsec_••••••••••••••••••••••••');
+      expect(markupHidden).toContain('data-testid="toggle-secret-13"');
+      expect(markupHidden).toContain('Reveal');
+      expect(markupHidden).not.toContain('whsec_demo_secret_xyz1234567890abcdef');
+
+      // Revealed state
+      const markupRevealed = renderToStaticMarkup(
+        <WebhookEndpointsTable
+          endpoints={mockEndpoints}
+          canReadSecret={true}
+          showSecret={{ 13: true }}
+          onToggleSecret={() => {}}
+        />
+      );
+      expect(markupRevealed).toContain('whsec_demo_secret_xyz1234567890abcdef');
+      expect(markupRevealed).toContain('Hide');
+    });
+
+    it('masks secret and displays Locked badge without Reveal button when canReadSecret is false', () => {
+      const markup = renderToStaticMarkup(
+        <WebhookEndpointsTable
+          endpoints={mockEndpoints}
+          canReadSecret={false}
+          showSecret={{ 13: true }} // even if client attempted to set showSecret to true
+          onToggleSecret={() => {}}
+        />
+      );
+
+      expect(markup).toContain('whsec_••••••••••••••••••••••••');
+      expect(markup).not.toContain('whsec_demo_secret_xyz1234567890abcdef');
+      expect(markup).not.toContain('data-testid="toggle-secret-13"');
+      expect(markup).toContain('data-testid="secret-locked-13"');
+      expect(markup).toContain('Locked');
+    });
+
+    it('renders empty table row when no endpoints configured', () => {
+      const markup = renderToStaticMarkup(
+        <WebhookEndpointsTable
+          endpoints={[]}
+          canReadSecret={true}
+          showSecret={{}}
+          onToggleSecret={() => {}}
+        />
+      );
+
+      expect(markup).toContain('No webhook endpoints configured.');
     });
   });
 });

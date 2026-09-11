@@ -4,12 +4,23 @@ import {
   getWebhookEndpoints,
   getWebhookDeliveries,
   addWebhookEndpoint,
-  type WebhookDelivery
+  type WebhookDelivery,
+  type WebhookEndpoint
 } from '../api/webhook.js';
 
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../providers/AuthProvider';
-import { CreditCard, LogOut, ShieldCheck, Code2, ExternalLink, X } from 'lucide-react';
+import { hasPermission } from '../utils/rbac.js';
+import {
+  CreditCard,
+  LogOut,
+  ShieldCheck,
+  ShieldAlert,
+  Code2,
+  ExternalLink,
+  X,
+  Lock
+} from 'lucide-react';
 
 export function extractWebhookErrorMessage(err: any): string {
   const fieldError = err?.response?.data?.error?.details?.fieldErrors?.url?.[0];
@@ -18,6 +29,164 @@ export function extractWebhookErrorMessage(err: any): string {
     err?.response?.data?.error?.message ||
     err?.message ||
     'Failed to add webhook endpoint'
+  );
+}
+
+export function DeveloperPortalAccessDenied() {
+  return (
+    <div
+      data-testid="developer-portal-unauthorized"
+      className="rounded-xl border border-slate-200 bg-white p-8 text-center shadow-xs"
+    >
+      <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-amber-50 text-amber-600 mb-4">
+        <ShieldAlert size={24} aria-hidden="true" />
+      </div>
+      <h2 className="text-lg font-semibold text-gray-900">Developer Portal Access Restricted</h2>
+      <p className="mt-2 text-sm text-gray-500 max-w-md mx-auto">
+        You do not have the required <code className="font-mono text-xs bg-slate-100 px-1.5 py-0.5 rounded text-slate-800">webhook:read</code> permission to view webhook configurations or delivery telemetry.
+      </p>
+    </div>
+  );
+}
+
+export function WebhookRegistrationForm({
+  url,
+  onUrlChange,
+  onSubmit,
+  isPending,
+  canManageWebhooks,
+  formError
+}: {
+  url: string;
+  onUrlChange: (val: string) => void;
+  onSubmit: (e: React.FormEvent) => void;
+  isPending: boolean;
+  canManageWebhooks: boolean;
+  formError: string | null;
+}) {
+  return (
+    <div>
+      <form onSubmit={onSubmit} className="mt-6 flex max-w-md gap-x-4">
+        <input
+          type="url"
+          required
+          value={url}
+          onChange={(e) => onUrlChange(e.target.value)}
+          disabled={!canManageWebhooks}
+          placeholder="https://merchant.example.com/webhook"
+          className="min-w-0 flex-auto rounded-md border-0 px-3.5 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 disabled:bg-slate-50 disabled:text-slate-500 disabled:cursor-not-allowed sm:text-sm sm:leading-6"
+        />
+        <button
+          type="submit"
+          disabled={!canManageWebhooks || isPending}
+          className="flex-none inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3.5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed"
+          title={!canManageWebhooks ? 'Requires webhook:manage permission' : undefined}
+        >
+          {!canManageWebhooks && <Lock size={14} aria-hidden="true" />}
+          {isPending ? 'Adding...' : 'Add Endpoint'}
+        </button>
+      </form>
+
+      {!canManageWebhooks && (
+        <div
+          data-testid="webhook-manage-unauthorized-notice"
+          className="mt-3 flex items-center gap-2 rounded-md bg-amber-50 p-2.5 text-xs text-amber-800 border border-amber-200 max-w-md"
+        >
+          <Lock size={14} className="shrink-0 text-amber-600" aria-hidden="true" />
+          <span>Registering webhook endpoints requires the <code className="font-mono text-xs bg-amber-100/70 px-1 py-0.5 rounded">webhook:manage</code> permission.</span>
+        </div>
+      )}
+
+      {formError && (
+        <div
+          data-testid="webhook-form-error"
+          className="mt-3 max-w-md rounded-md bg-rose-50 p-3 text-xs font-medium text-rose-700 border border-rose-200"
+        >
+          {formError}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function WebhookEndpointsTable({
+  endpoints,
+  canReadSecret,
+  showSecret,
+  onToggleSecret
+}: {
+  endpoints: WebhookEndpoint[];
+  canReadSecret: boolean;
+  showSecret: Record<number, boolean>;
+  onToggleSecret: (id: number) => void;
+}) {
+  return (
+    <div className="mt-8 flow-root">
+      <div className="-mx-4 -my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
+        <div className="inline-block min-w-full py-2 align-middle sm:px-6 lg:px-8">
+          <table className="min-w-full divide-y divide-gray-300">
+            <thead>
+              <tr>
+                <th className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 sm:pl-0">URL</th>
+                <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Signing Secret</th>
+                <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-200">
+              {endpoints.map((endpoint) => (
+                <tr key={endpoint.id}>
+                  <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0">
+                    {endpoint.url}
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                    <div className="flex items-center gap-2">
+                      <span className="font-mono bg-gray-50 px-2 py-1 rounded border">
+                        {canReadSecret
+                          ? showSecret[endpoint.id]
+                            ? endpoint.secret
+                            : 'whsec_••••••••••••••••••••••••'
+                          : 'whsec_••••••••••••••••••••••••'}
+                      </span>
+                      {canReadSecret ? (
+                        <button
+                          type="button"
+                          onClick={() => onToggleSecret(endpoint.id)}
+                          className="text-indigo-600 hover:text-indigo-900 text-xs font-medium"
+                          data-testid={`toggle-secret-${endpoint.id}`}
+                        >
+                          {showSecret[endpoint.id] ? 'Hide' : 'Reveal'}
+                        </button>
+                      ) : (
+                        <span
+                          className="inline-flex items-center gap-1 text-xs text-slate-400 cursor-not-allowed"
+                          title="Requires webhook:secret:read permission"
+                          data-testid={`secret-locked-${endpoint.id}`}
+                        >
+                          <Lock size={12} aria-hidden="true" />
+                          Locked
+                        </span>
+                      )}
+                    </div>
+                  </td>
+                  <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                    <span className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset ${
+                      endpoint.isActive ? 'bg-green-50 text-green-700 ring-green-600/20' : 'bg-red-50 text-red-700 ring-red-600/20'
+                    }`}>
+                      {endpoint.isActive ? 'Active' : 'Disabled'}
+                    </span>
+                  </td>
+                </tr>
+              ))}
+              {endpoints.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="py-4 text-sm text-gray-500 text-center">No webhook endpoints configured.</td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -115,7 +284,13 @@ export function DeliveryInspectionDrawer({
 export function DeveloperPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
+  const userRoles = user?.roles || [];
+
+  const canReadWebhooks = hasPermission(userRoles, 'webhook:read');
+  const canManageWebhooks = hasPermission(userRoles, 'webhook:manage');
+  const canReadSecret = hasPermission(userRoles, 'webhook:secret:read');
+
   const [url, setUrl] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [selectedDelivery, setSelectedDelivery] = useState<WebhookDelivery | null>(null);
@@ -123,13 +298,15 @@ export function DeveloperPage() {
 
   const { data: endpointsData, isLoading: loadingEndpoints } = useQuery({
     queryKey: ['webhookEndpoints'],
-    queryFn: getWebhookEndpoints
+    queryFn: getWebhookEndpoints,
+    enabled: canReadWebhooks
   });
 
   const { data: deliveriesData, isLoading: loadingDeliveries } = useQuery({
     queryKey: ['webhookDeliveries'],
     queryFn: getWebhookDeliveries,
-    refetchInterval: 5000 // Poll every 5s to see new webhook deliveries
+    refetchInterval: 5000,
+    enabled: canReadWebhooks
   });
 
   // Keep selected delivery in sync if fresh data is polled
@@ -151,7 +328,7 @@ export function DeveloperPage() {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!url) return;
+    if (!canManageWebhooks || !url) return;
     setFormError(null);
     addEndpointMutation.mutate(url);
   };
@@ -217,164 +394,111 @@ export function DeveloperPage() {
             <h1 className="text-2xl font-bold text-gray-900">Developer Settings</h1>
           </div>
 
-          <div className="bg-white shadow-sm ring-1 ring-gray-900/5 sm:rounded-xl md:col-span-2">
-            <div className="px-4 py-6 sm:p-8">
-              <h2 className="text-base font-semibold leading-7 text-gray-900">Webhooks</h2>
-              <p className="mt-1 text-sm leading-6 text-gray-500">
-                Subscribe to payment events to receive real-time updates.
-              </p>
+          {!canReadWebhooks ? (
+            <DeveloperPortalAccessDenied />
+          ) : (
+            <>
+              {/* Webhooks Card */}
+              <div className="bg-white shadow-sm ring-1 ring-gray-900/5 sm:rounded-xl md:col-span-2">
+                <div className="px-4 py-6 sm:p-8">
+                  <h2 className="text-base font-semibold leading-7 text-gray-900">Webhooks</h2>
+                  <p className="mt-1 text-sm leading-6 text-gray-500">
+                    Subscribe to payment events to receive real-time updates.
+                  </p>
 
-              <form onSubmit={handleSubmit} className="mt-6 flex max-w-md gap-x-4">
-                <input
-                  type="url"
-                  required
-                  value={url}
-                  onChange={(e) => {
-                    setUrl(e.target.value);
-                    if (formError) setFormError(null);
-                  }}
-                  placeholder="https://merchant.example.com/webhook"
-                  className="min-w-0 flex-auto rounded-md border-0 px-3.5 py-2 text-gray-900 shadow-sm ring-1 ring-inset ring-gray-300 placeholder:text-gray-400 focus:ring-2 focus:ring-inset focus:ring-indigo-600 sm:text-sm sm:leading-6"
-                />
-                <button
-                  type="submit"
-                  disabled={addEndpointMutation.isPending}
-                  className="flex-none rounded-md bg-indigo-600 px-3.5 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-indigo-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50"
-                >
-                  {addEndpointMutation.isPending ? 'Adding...' : 'Add Endpoint'}
-                </button>
-              </form>
+                  <WebhookRegistrationForm
+                    url={url}
+                    onUrlChange={(val) => {
+                      setUrl(val);
+                      if (formError) setFormError(null);
+                    }}
+                    onSubmit={handleSubmit}
+                    isPending={addEndpointMutation.isPending}
+                    canManageWebhooks={canManageWebhooks}
+                    formError={formError}
+                  />
 
-              {formError && (
-                <div
-                  data-testid="webhook-form-error"
-                  className="mt-3 max-w-md rounded-md bg-rose-50 p-3 text-xs font-medium text-rose-700 border border-rose-200"
-                >
-                  {formError}
+                  {loadingEndpoints ? (
+                    <p className="mt-4 text-sm text-gray-500">Loading endpoints...</p>
+                  ) : (
+                    <WebhookEndpointsTable
+                      endpoints={endpointsData?.endpoints || []}
+                      canReadSecret={canReadSecret}
+                      showSecret={showSecret}
+                      onToggleSecret={toggleSecret}
+                    />
+                  )}
                 </div>
-              )}
+              </div>
 
-              {loadingEndpoints ? (
-                <p className="mt-4 text-sm text-gray-500">Loading endpoints...</p>
-              ) : (
-                <div className="mt-8 flow-root">
-                  <div className="-mx-4 -my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
-                    <div className="inline-block min-w-full py-2 align-middle sm:px-6 lg:px-8">
-                      <table className="min-w-full divide-y divide-gray-300">
-                        <thead>
-                          <tr>
-                            <th className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 sm:pl-0">URL</th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Signing Secret</th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-200">
-                          {endpointsData?.endpoints.map((endpoint) => (
-                            <tr key={endpoint.id}>
-                              <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0">
-                                {endpoint.url}
-                              </td>
-                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                                <div className="flex items-center gap-2">
-                                  <span className="font-mono bg-gray-50 px-2 py-1 rounded border">
-                                    {showSecret[endpoint.id] ? endpoint.secret : 'whsec_••••••••••••••••••••••••'}
-                                  </span>
-                                  <button
-                                    onClick={() => toggleSecret(endpoint.id)}
-                                    className="text-indigo-600 hover:text-indigo-900 text-xs font-medium"
-                                  >
-                                    {showSecret[endpoint.id] ? 'Hide' : 'Reveal'}
-                                  </button>
-                                </div>
-                              </td>
-                              <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                                <span className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset ${
-                                  endpoint.isActive ? 'bg-green-50 text-green-700 ring-green-600/20' : 'bg-red-50 text-red-700 ring-red-600/20'
-                                }`}>
-                                  {endpoint.isActive ? 'Active' : 'Disabled'}
-                                </span>
-                              </td>
-                            </tr>
-                          ))}
-                          {(!endpointsData?.endpoints || endpointsData.endpoints.length === 0) && (
-                            <tr>
-                              <td colSpan={3} className="py-4 text-sm text-gray-500 text-center">No webhook endpoints configured.</td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
+              {/* Recent Deliveries Card */}
+              <div className="bg-white shadow-sm ring-1 ring-gray-900/5 sm:rounded-xl md:col-span-2">
+                <div className="px-4 py-6 sm:p-8">
+                  <h2 className="text-base font-semibold leading-7 text-gray-900">Recent Deliveries</h2>
 
-          <div className="bg-white shadow-sm ring-1 ring-gray-900/5 sm:rounded-xl md:col-span-2">
-            <div className="px-4 py-6 sm:p-8">
-              <h2 className="text-base font-semibold leading-7 text-gray-900">Recent Deliveries</h2>
-              
-              {loadingDeliveries ? (
-                <p className="mt-4 text-sm text-gray-500">Loading deliveries...</p>
-              ) : (
-                <div className="mt-6 flow-root">
-                  <div className="-mx-4 -my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
-                    <div className="inline-block min-w-full py-2 align-middle sm:px-6 lg:px-8">
-                      <table className="min-w-full divide-y divide-gray-300">
-                        <thead>
-                          <tr>
-                            <th className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 sm:pl-0">Event Type</th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">HTTP Code</th>
-                            <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Timestamp</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-200">
-                          {deliveriesData?.deliveries.map((delivery) => {
-                            const isSelected = activeDelivery?.id === delivery.id;
-                            return (
-                              <tr
-                                key={delivery.id}
-                                data-testid={`delivery-row-${delivery.id}`}
-                                onClick={() => setSelectedDelivery(delivery)}
-                                className={`cursor-pointer transition-colors hover:bg-slate-50 ${
-                                  isSelected ? 'bg-indigo-50/70 font-medium' : ''
-                                }`}
-                              >
-                                <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0">
-                                  <span className="font-mono text-xs text-slate-800">{delivery.eventType}</span>
-                                </td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                                  <span className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset ${
-                                    delivery.status === 'success' ? 'bg-green-50 text-green-700 ring-green-600/20' : 
-                                    delivery.status === 'failed' ? 'bg-red-50 text-red-700 ring-red-600/20' : 
-                                    'bg-yellow-50 text-yellow-700 ring-yellow-600/20'
-                                  }`}>
-                                    {delivery.status}
-                                  </span>
-                                </td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500 font-mono">
-                                  {delivery.responseStatus || '-'}
-                                </td>
-                                <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
-                                  {new Date(delivery.createdAt).toLocaleString()}
-                                </td>
+                  {loadingDeliveries ? (
+                    <p className="mt-4 text-sm text-gray-500">Loading deliveries...</p>
+                  ) : (
+                    <div className="mt-6 flow-root">
+                      <div className="-mx-4 -my-2 overflow-x-auto sm:-mx-6 lg:-mx-8">
+                        <div className="inline-block min-w-full py-2 align-middle sm:px-6 lg:px-8">
+                          <table className="min-w-full divide-y divide-gray-300">
+                            <thead>
+                              <tr>
+                                <th className="py-3.5 pl-4 pr-3 text-left text-sm font-semibold text-gray-900 sm:pl-0">Event Type</th>
+                                <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Status</th>
+                                <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">HTTP Code</th>
+                                <th className="px-3 py-3.5 text-left text-sm font-semibold text-gray-900">Timestamp</th>
                               </tr>
-                            );
-                          })}
-                          {(!deliveriesData?.deliveries || deliveriesData.deliveries.length === 0) && (
-                            <tr>
-                              <td colSpan={4} className="py-4 text-sm text-gray-500 text-center">No recent deliveries found.</td>
-                            </tr>
-                          )}
-                        </tbody>
-                      </table>
+                            </thead>
+                            <tbody className="divide-y divide-gray-200">
+                              {deliveriesData?.deliveries.map((delivery) => {
+                                const isSelected = activeDelivery?.id === delivery.id;
+                                return (
+                                  <tr
+                                    key={delivery.id}
+                                    data-testid={`delivery-row-${delivery.id}`}
+                                    onClick={() => setSelectedDelivery(delivery)}
+                                    className={`cursor-pointer transition-colors hover:bg-slate-50 ${
+                                      isSelected ? 'bg-indigo-50/70 font-medium' : ''
+                                    }`}
+                                  >
+                                    <td className="whitespace-nowrap py-4 pl-4 pr-3 text-sm font-medium text-gray-900 sm:pl-0">
+                                      <span className="font-mono text-xs text-slate-800">{delivery.eventType}</span>
+                                    </td>
+                                    <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                                      <span className={`inline-flex items-center rounded-md px-2 py-1 text-xs font-medium ring-1 ring-inset ${
+                                        delivery.status === 'success' ? 'bg-green-50 text-green-700 ring-green-600/20' :
+                                        delivery.status === 'failed' ? 'bg-red-50 text-red-700 ring-red-600/20' :
+                                        'bg-yellow-50 text-yellow-700 ring-yellow-600/20'
+                                      }`}>
+                                        {delivery.status}
+                                      </span>
+                                    </td>
+                                    <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500 font-mono">
+                                      {delivery.responseStatus || '-'}
+                                    </td>
+                                    <td className="whitespace-nowrap px-3 py-4 text-sm text-gray-500">
+                                      {new Date(delivery.createdAt).toLocaleString()}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                              {(!deliveriesData?.deliveries || deliveriesData.deliveries.length === 0) && (
+                                <tr>
+                                  <td colSpan={4} className="py-4 text-sm text-gray-500 text-center">No recent deliveries found.</td>
+                                </tr>
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
-              )}
-            </div>
-          </div>
+              </div>
+            </>
+          )}
         </div>
       </section>
 
@@ -385,7 +509,6 @@ export function DeveloperPage() {
           onClose={() => setSelectedDelivery(null)}
         />
       )}
-
     </main>
   );
 }
