@@ -34,3 +34,19 @@ export async function getWebhookDeliveries(): Promise<{ deliveries: WebhookDeliv
   const { data } = await api.get<{ deliveries: WebhookDelivery[] }>('/webhooks/deliveries');
   return data;
 }
+
+export interface RetryWebhookDeliveryResponse {
+  success: boolean;
+  delivery: WebhookDelivery;
+  error?: string;
+}
+
+export async function retryWebhookDelivery(
+  deliveryId: number
+): Promise<RetryWebhookDeliveryResponse> {
+  const { data } = await api.post<RetryWebhookDeliveryResponse>(
+    `/webhooks/deliveries/${deliveryId}/retry`
+  );
+  return data;
+}
+

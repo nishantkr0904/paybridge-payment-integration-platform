@@ -56,3 +56,60 @@ export async function updateWebhookDelivery(
     [status, responseStatus, id]
   );
 }
+
+export interface WebhookDeliveryWithEndpoint extends WebhookDelivery {
+  endpointUrl: string;
+  endpointSecret: string;
+  endpointIsActive: boolean;
+}
+
+export async function getWebhookDeliveryById(
+  merchantId: number,
+  deliveryId: number
+): Promise<WebhookDeliveryWithEndpoint | null> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT 
+       d.id,
+       d.endpoint_id as endpointId,
+       d.event_type as eventType,
+       d.payload,
+       d.status,
+       d.response_status as responseStatus,
+       d.created_at as createdAt,
+       e.url as endpointUrl,
+       e.secret as endpointSecret,
+       e.is_active as endpointIsActive
+     FROM webhook_deliveries d
+     JOIN webhook_endpoints e ON d.endpoint_id = e.id
+     WHERE d.id = ? AND e.merchant_id = ?`,
+    [deliveryId, merchantId]
+  );
+
+  if (rows.length === 0) {
+    return null;
+  }
+
+  const row = rows[0] as RowDataPacket;
+  let parsedPayload: Record<string, unknown>;
+  try {
+    parsedPayload =
+      typeof row.payload === 'string'
+        ? JSON.parse(row.payload)
+        : (row.payload as Record<string, unknown>);
+  } catch {
+    parsedPayload = { raw: row.payload };
+  }
+
+  return {
+    id: Number(row.id),
+    endpointId: Number(row.endpointId),
+    eventType: String(row.eventType),
+    payload: parsedPayload,
+    status: row.status as 'pending' | 'success' | 'failed',
+    responseStatus: row.responseStatus !== null ? Number(row.responseStatus) : null,
+    createdAt: new Date(row.createdAt).toISOString(),
+    endpointUrl: String(row.endpointUrl),
+    endpointSecret: String(row.endpointSecret),
+    endpointIsActive: Boolean(row.endpointIsActive)
+  };
+}

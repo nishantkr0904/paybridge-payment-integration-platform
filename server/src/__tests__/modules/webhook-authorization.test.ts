@@ -8,6 +8,7 @@ import { connectRedis, disconnectRedis } from '../../infrastructure/redis.js';
 import { signAccessToken } from '../../utils/token.js';
 import { ROLE_PERMISSIONS, type Role } from '../../types/auth.js';
 import { createWebhookEndpoint, logWebhookDelivery } from '../../modules/webhook/webhook.repository.js';
+import { retryWebhookDelivery } from '../../modules/webhook/webhook.service.js';
 
 describe('Merchant Developer — Task 2: Webhook RBAC Authorization & Tenant Isolation', () => {
   let server: Server;
@@ -30,6 +31,8 @@ describe('Merchant Developer — Task 2: Webhook RBAC Authorization & Tenant Iso
 
   let m1EndpointId: number;
   let m2EndpointId: number;
+  let m1DeliveryId: number;
+  let m2DeliveryId: number;
   const m1Secret = 'whsec_merchant_1_super_secret_key_123';
   const m2Secret = 'whsec_merchant_2_super_secret_key_456';
 
@@ -70,7 +73,7 @@ describe('Merchant Developer — Task 2: Webhook RBAC Authorization & Tenant Iso
       );
 
       // Seed 1 delivery for Merchant 1
-      await logWebhookDelivery(
+      m1DeliveryId = await logWebhookDelivery(
         m1EndpointId,
         'payment.succeeded',
         { id: 'evt_m1_001', test: true },
@@ -86,7 +89,7 @@ describe('Merchant Developer — Task 2: Webhook RBAC Authorization & Tenant Iso
       );
 
       // Seed 1 delivery for Merchant 2
-      await logWebhookDelivery(
+      m2DeliveryId = await logWebhookDelivery(
         m2EndpointId,
         'payment.failed',
         { id: 'evt_m2_001', test: true },
@@ -518,6 +521,237 @@ describe('Merchant Developer — Task 2: Webhook RBAC Authorization & Tenant Iso
       const data = (await res.json()) as { id: number; url: string; secret: string };
       expect(data.secret).not.toBe('whsec_••••••••••••••••••••••••');
       expect(data.secret.startsWith('whsec_')).toBe(true);
+    });
+  });
+
+  describe('6. POST /api/webhooks/deliveries/:id/retry Authorization & Tenant Isolation', () => {
+    it('allows merchant_developer (possesses webhook:retry)', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${merchantDeveloperToken}` }
+      });
+
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as {
+        success: boolean;
+        delivery: { id: number; endpointId: number; eventType: string; status: string };
+      };
+      expect(data.delivery).toBeDefined();
+      expect(data.delivery.endpointId).toBe(m1EndpointId);
+      expect(data.delivery.eventType).toBe('payment.succeeded');
+      expect(typeof data.success).toBe('boolean');
+    });
+
+    it('allows merchant_admin (possesses webhook:retry)', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${merchantAdminToken}` }
+      });
+
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as {
+        success: boolean;
+        delivery: { id: number; endpointId: number };
+      };
+      expect(data.delivery.endpointId).toBe(m1EndpointId);
+    });
+
+    it('allows legacy merchant role (possesses webhook:retry)', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${legacyMerchantToken}` }
+      });
+
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as {
+        success: boolean;
+        delivery: { id: number; endpointId: number };
+      };
+      expect(data.delivery.endpointId).toBe(m1EndpointId);
+    });
+
+    it('rejects merchant_operator with 403 AUTH_FORBIDDEN (lacks webhook:retry)', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${merchantOperatorToken}` }
+      });
+
+      expect(res.status).toBe(403);
+      const err = (await res.json()) as { error: { code: string; message: string } };
+      expect(err.error.code).toBe('AUTH_FORBIDDEN');
+      expect(err.error.message).toContain('webhook:retry');
+    });
+
+    it('rejects finance_analyst with 403 AUTH_FORBIDDEN', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${financeAnalystToken}` }
+      });
+
+      expect(res.status).toBe(403);
+      const err = (await res.json()) as { error: { code: string } };
+      expect(err.error.code).toBe('AUTH_FORBIDDEN');
+    });
+
+    it('rejects risk_compliance_reviewer with 403 AUTH_FORBIDDEN', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${riskComplianceReviewerToken}` }
+      });
+
+      expect(res.status).toBe(403);
+      const err = (await res.json()) as { error: { code: string } };
+      expect(err.error.code).toBe('AUTH_FORBIDDEN');
+    });
+
+    it('rejects platform_operator with 403 AUTH_FORBIDDEN', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${platformOperatorToken}` }
+      });
+
+      expect(res.status).toBe(403);
+      const err = (await res.json()) as { error: { code: string } };
+      expect(err.error.code).toBe('AUTH_FORBIDDEN');
+    });
+
+    it('rejects unauthenticated request with 401 AUTH_TOKEN_MISSING', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST'
+      });
+
+      expect(res.status).toBe(401);
+      const err = (await res.json()) as { error: { code: string } };
+      expect(err.error.code).toBe('AUTH_TOKEN_MISSING');
+    });
+
+    it('enforces tenant isolation: merchant 2 developer cannot retry merchant 1 delivery (returns 404)', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m1DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${m2DeveloperToken}` }
+      });
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as { error: { code: string; message: string } };
+      expect(err.error.code).toBe('DELIVERY_NOT_FOUND');
+    });
+
+    it('enforces tenant isolation: merchant 1 developer cannot retry merchant 2 delivery (returns 404)', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/${m2DeliveryId}/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${merchantDeveloperToken}` }
+      });
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as { error: { code: string } };
+      expect(err.error.code).toBe('DELIVERY_NOT_FOUND');
+    });
+
+    it('returns 404 DELIVERY_NOT_FOUND for nonexistent delivery ID', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/99999999/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${merchantDeveloperToken}` }
+      });
+
+      expect(res.status).toBe(404);
+      const err = (await res.json()) as { error: { code: string } };
+      expect(err.error.code).toBe('DELIVERY_NOT_FOUND');
+    });
+
+    it('rejects non-integer delivery ID with 400 INVALID_DELIVERY_ID', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/invalid_id/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${merchantDeveloperToken}` }
+      });
+
+      expect(res.status).toBe(400);
+      const err = (await res.json()) as { error: { code: string; message: string } };
+      expect(err.error.code).toBe('INVALID_DELIVERY_ID');
+      expect(err.error.message).toContain('positive integer');
+    });
+
+    it('rejects non-positive delivery ID (zero or negative) with 400 INVALID_DELIVERY_ID', async () => {
+      const res = await fetch(`${baseUrl}/api/webhooks/deliveries/-1/retry`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${merchantDeveloperToken}` }
+      });
+
+      expect(res.status).toBe(400);
+      const err = (await res.json()) as { error: { code: string } };
+      expect(err.error.code).toBe('INVALID_DELIVERY_ID');
+    });
+  });
+
+  describe('7. retryWebhookDelivery Service Execution & Edge Cases', () => {
+    it('successfully replays delivery with simulated 200 response and verified HMAC signature', async () => {
+      let capturedUrl = '';
+      let capturedHeaders: Record<string, string> = {};
+      let capturedBody = '';
+
+      const mockFetch: typeof fetch = async (input, init) => {
+        capturedUrl = String(input);
+        capturedHeaders = (init?.headers as Record<string, string>) || {};
+        capturedBody = String(init?.body || '');
+        return new Response(JSON.stringify({ received: true }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      };
+
+      const result = await retryWebhookDelivery(merchant1Id, m1DeliveryId, {
+        fetchFn: mockFetch,
+        dnsLookupFn: async () => [{ address: '93.184.216.34', family: 4 }] // public IP for example.com
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.delivery.status).toBe('success');
+      expect(result.delivery.responseStatus).toBe(200);
+      expect(capturedUrl).toBe('https://api.merchant1.example.com/webhooks');
+      expect(capturedHeaders['User-Agent']).toBe('PayBridge-Webhook/1.0');
+      expect(capturedHeaders['x-paybridge-signature']).toMatch(/^[a-f0-9]{64}$/);
+      expect(capturedBody).toContain('evt_m1_001');
+    });
+
+    it('records failed delivery when destination returns 502 Bad Gateway', async () => {
+      const mockFetch: typeof fetch = async () => {
+        return new Response('Bad Gateway', { status: 502 });
+      };
+
+      const result = await retryWebhookDelivery(merchant1Id, m1DeliveryId, {
+        fetchFn: mockFetch,
+        dnsLookupFn: async () => [{ address: '93.184.216.34', family: 4 }]
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.delivery.status).toBe('failed');
+      expect(result.delivery.responseStatus).toBe(502);
+      expect(result.error).toContain('HTTP 502');
+    });
+
+    it('rejects retry when endpoint is deactivated with 400 ENDPOINT_INACTIVE', async () => {
+      // Temporarily deactivate endpoint
+      await pool.execute('UPDATE webhook_endpoints SET is_active = FALSE WHERE id = ?', [m1EndpointId]);
+
+      try {
+        await expect(retryWebhookDelivery(merchant1Id, m1DeliveryId)).rejects.toMatchObject({
+          statusCode: 400,
+          code: 'ENDPOINT_INACTIVE'
+        });
+      } finally {
+        // Restore active state
+        await pool.execute('UPDATE webhook_endpoints SET is_active = TRUE WHERE id = ?', [m1EndpointId]);
+      }
+    });
+
+    it('blocks replay and logs failed attempt when target fails SSRF validation', async () => {
+      const result = await retryWebhookDelivery(merchant1Id, m1DeliveryId, {
+        dnsLookupFn: async () => [{ address: '127.0.0.1', family: 4 }] // resolves to loopback
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.delivery.status).toBe('failed');
+      expect(result.delivery.responseStatus).toBeNull();
+      expect(result.error).toContain('SSRF');
     });
   });
 });

@@ -9,7 +9,12 @@ import {
   isPrivateOrReservedIp,
   normalizeHostname
 } from '../../utils/ssrf.js';
-import { addWebhookEndpoint, listWebhookEndpoints, listWebhookDeliveries } from './webhook.service.js';
+import {
+  addWebhookEndpoint,
+  listWebhookEndpoints,
+  listWebhookDeliveries,
+  retryWebhookDelivery
+} from './webhook.service.js';
 
 export const addEndpointSchema = z.object({
   url: z
@@ -133,6 +138,34 @@ webhookRouter.get('/deliveries', requirePermission('webhook:read'), async (req, 
     const deliveries = await listWebhookDeliveries(req.user!.id, limit);
     res.json({ deliveries });
   } catch (error) {
+    next(error);
+  }
+});
+
+/* POST /api/webhooks/deliveries/:id/retry — Manually retry a webhook delivery (requires webhook:retry) */
+webhookRouter.post('/deliveries/:id/retry', requirePermission('webhook:retry'), async (req, res, next) => {
+  try {
+    const deliveryId = Number(req.params.id);
+    if (!Number.isInteger(deliveryId) || deliveryId <= 0) {
+      return res.status(400).json({
+        error: {
+          code: 'INVALID_DELIVERY_ID',
+          message: 'Delivery ID must be a positive integer.'
+        }
+      });
+    }
+
+    const result = await retryWebhookDelivery(req.user!.id, deliveryId);
+    res.status(200).json(result);
+  } catch (error: any) {
+    if (error.statusCode) {
+      return res.status(error.statusCode).json({
+        error: {
+          code: error.code || 'RETRY_FAILED',
+          message: error.message
+        }
+      });
+    }
     next(error);
   }
 });

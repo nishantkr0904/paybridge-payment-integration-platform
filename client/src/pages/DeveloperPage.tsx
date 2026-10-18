@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   getWebhookEndpoints,
   getWebhookDeliveries,
   addWebhookEndpoint,
+  retryWebhookDelivery,
   type WebhookDelivery,
-  type WebhookEndpoint
+  type WebhookEndpoint,
+  type RetryWebhookDeliveryResponse
 } from '../api/webhook.js';
 
 import { useNavigate } from 'react-router-dom';
@@ -19,7 +21,12 @@ import {
   Code2,
   ExternalLink,
   X,
-  Lock
+  Lock,
+  RotateCw,
+  AlertCircle,
+  CheckCircle2,
+  Copy,
+  Check
 } from 'lucide-react';
 
 export function extractWebhookErrorMessage(err: any): string {
@@ -192,11 +199,105 @@ export function WebhookEndpointsTable({
 
 export function DeliveryInspectionDrawer({
   delivery,
-  onClose
+  onClose,
+  canRetry = true,
+  onRetrySuccess,
+  onRetry,
+  retryState,
+  onRetryClick
 }: {
   delivery: WebhookDelivery;
   onClose: () => void;
+  canRetry?: boolean;
+  onRetrySuccess?: (newDelivery: WebhookDelivery) => void;
+  onRetry?: (deliveryId: number) => Promise<RetryWebhookDeliveryResponse>;
+  retryState?: {
+    isPending: boolean;
+    result: { type: 'success' | 'failure'; message: string } | null;
+  };
+  onRetryClick?: () => void;
 }) {
+  const queryClient = useQueryClient();
+  const [copied, setCopied] = useState(false);
+  const copyTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [retryResult, setRetryResult] = useState<{
+    type: 'success' | 'failure';
+    message: string;
+  } | null>(null);
+
+  // Clear retry feedback whenever the inspected delivery changes (prevents stale state)
+  useEffect(() => {
+    setRetryResult(null);
+    setCopied(false);
+    if (copyTimeoutRef.current) {
+      clearTimeout(copyTimeoutRef.current);
+      copyTimeoutRef.current = null;
+    }
+    return () => {
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+    };
+  }, [delivery.id]);
+
+  const retryMutation = useMutation({
+    mutationFn: () => (onRetry ? onRetry(delivery.id) : retryWebhookDelivery(delivery.id)),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ['webhookDeliveries'] });
+      setRetryResult({
+        type: res.success ? 'success' : 'failure',
+        message: res.success
+          ? `Delivery replayed successfully! HTTP ${res.delivery.responseStatus || 200}`
+          : res.error || `Destination returned HTTP ${res.delivery.responseStatus || 'error'}`
+      });
+      onRetrySuccess?.(res.delivery);
+    },
+    onError: (err: any) => {
+      setRetryResult({
+        type: 'failure',
+        message:
+          err?.response?.data?.error?.message ||
+          err?.message ||
+          'Failed to replay webhook delivery.'
+      });
+    }
+  });
+
+  const isRetrying = retryState ? retryState.isPending : retryMutation.isPending;
+  const currentRetryResult = retryState !== undefined ? retryState.result : retryResult;
+
+  const handleRetry = () => {
+    if (onRetryClick) {
+      onRetryClick();
+    } else {
+      setRetryResult(null);
+      retryMutation.mutate();
+    }
+  };
+
+  const handleCopyPayload = async () => {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(delivery.payload, null, 2));
+      setCopied(true);
+      if (copyTimeoutRef.current) {
+        clearTimeout(copyTimeoutRef.current);
+      }
+      copyTimeoutRef.current = setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Fallback
+    }
+  };
+
+  // Extract structured failure diagnostics from payload if present
+  const failureData = (delivery.payload as any)?.data;
+  const failureCode = failureData?.failureCode || (delivery.payload as any)?.failureCode;
+  const failureReason =
+    failureData?.failureReason ||
+    failureData?.failureMessage ||
+    (delivery.payload as any)?.failureReason ||
+    (delivery.payload as any)?.failureMessage;
+  const isFailed = delivery.status === 'failed';
+
   return (
     <aside
       data-testid="delivery-detail-drawer"
@@ -263,18 +364,158 @@ export function DeliveryInspectionDrawer({
           </div>
         </div>
 
+        {/* Failure Diagnostics Card */}
+        {isFailed && (
+          <div
+            data-testid="delivery-failure-diagnostic"
+            className="rounded-lg bg-rose-50 border border-rose-200 p-4 space-y-2 text-sm"
+          >
+            <div className="flex items-center gap-2 text-rose-800 font-semibold text-xs uppercase tracking-wider">
+              <AlertCircle size={15} className="text-rose-600 shrink-0" />
+              <span>Failure Diagnostic</span>
+            </div>
+            <div className="text-xs text-rose-800 space-y-1">
+              <p>
+                <span className="font-semibold text-rose-900">Destination Response: </span>
+                {delivery.responseStatus
+                  ? `HTTP ${delivery.responseStatus} (${
+                      delivery.responseStatus >= 500
+                        ? 'Server Error'
+                        : delivery.responseStatus >= 400
+                        ? 'Client Error'
+                        : 'Failed'
+                    })`
+                  : 'No response received (network timeout or connection error)'}
+              </p>
+              {failureCode && (
+                <p>
+                  <span className="font-semibold text-rose-900">Failure Code: </span>
+                  <code className="font-mono bg-rose-100/90 text-rose-900 px-1 py-0.5 rounded text-xs">
+                    {failureCode}
+                  </code>
+                </p>
+              )}
+              {failureReason && (
+                <p>
+                  <span className="font-semibold text-rose-900">Reason / Message: </span>
+                  <span className="text-rose-950">{failureReason}</span>
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Payload Section */}
         <div>
           <div className="flex items-center justify-between mb-2">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-500">Payload</h3>
-            <span className="text-xs text-slate-400 font-mono">application/json</span>
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                data-testid="copy-payload-btn"
+                onClick={handleCopyPayload}
+                className="inline-flex items-center gap-1 text-xs text-slate-600 hover:text-slate-900 transition-colors"
+                title="Copy raw JSON payload"
+              >
+                {copied ? (
+                  <>
+                    <Check size={12} className="text-emerald-600" />
+                    <span className="text-emerald-600 font-medium">Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy size={12} />
+                    <span>Copy</span>
+                  </>
+                )}
+              </button>
+              <span className="text-xs text-slate-400 font-mono">application/json</span>
+            </div>
           </div>
           <pre
             data-testid="delivery-payload-content"
-            className="bg-slate-900 text-slate-100 p-4 rounded-lg overflow-x-auto text-xs font-mono border border-slate-800 leading-relaxed max-h-96"
+            className="bg-slate-900 text-slate-100 p-4 rounded-lg overflow-x-auto text-xs font-mono border border-slate-800 leading-relaxed max-h-80"
           >
             {JSON.stringify(delivery.payload, null, 2)}
           </pre>
+        </div>
+
+        {/* Manual Retry Section */}
+        <div className="pt-4 border-t border-slate-200">
+          <div className="flex items-center justify-between gap-4">
+            <div>
+              <h4 className="text-xs font-bold uppercase tracking-wider text-slate-700">Manual Replay</h4>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Re-dispatch this delivery event with fresh timestamp and valid HMAC signature.
+              </p>
+            </div>
+            <button
+              type="button"
+              data-testid="retry-delivery-btn"
+              onClick={handleRetry}
+              disabled={!canRetry || isRetrying}
+              className="inline-flex items-center gap-1.5 rounded-md bg-indigo-600 px-3.5 py-2 text-xs font-semibold text-white shadow-xs hover:bg-indigo-500 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-600 disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+              title={!canRetry ? 'Requires webhook:retry permission' : undefined}
+            >
+              {!canRetry ? (
+                <Lock size={13} aria-hidden="true" />
+              ) : (
+                <RotateCw
+                  size={13}
+                  className={isRetrying ? 'animate-spin' : ''}
+                  aria-hidden="true"
+                />
+              )}
+              <span>
+                {isRetrying
+                  ? 'Retrying...'
+                  : canRetry
+                  ? 'Retry Delivery'
+                  : 'Retry (Locked)'}
+              </span>
+            </button>
+          </div>
+
+          {!canRetry && (
+            <div
+              data-testid="delivery-retry-unauthorized-notice"
+              className="mt-3 flex items-center gap-2 rounded-md bg-amber-50 p-2.5 text-xs text-amber-800 border border-amber-200"
+            >
+              <Lock size={14} className="shrink-0 text-amber-600" aria-hidden="true" />
+              <span>
+                Replaying webhook deliveries requires the{' '}
+                <code className="font-mono text-xs bg-amber-100/70 px-1 py-0.5 rounded">
+                  webhook:retry
+                </code>{' '}
+                permission.
+              </span>
+            </div>
+          )}
+
+          {currentRetryResult && (
+            <div
+              data-testid={
+                currentRetryResult.type === 'success' ? 'retry-success-banner' : 'retry-failure-banner'
+              }
+              className={`mt-3 flex items-start gap-2.5 rounded-md p-3 text-xs border ${
+                currentRetryResult.type === 'success'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : 'bg-rose-50 text-rose-800 border-rose-200'
+              }`}
+            >
+              {currentRetryResult.type === 'success' ? (
+                <CheckCircle2 size={16} className="text-emerald-600 shrink-0 mt-0.5" />
+              ) : (
+                <AlertCircle size={16} className="text-rose-600 shrink-0 mt-0.5" />
+              )}
+              <div className="flex-1">
+                <p className="font-semibold">
+                  {currentRetryResult.type === 'success' ? 'Replay Successful' : 'Replay Failed'}
+                </p>
+                <p className="mt-0.5 opacity-90">{currentRetryResult.message}</p>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </aside>
@@ -290,6 +531,7 @@ export function DeveloperPage() {
   const canReadWebhooks = hasPermission(userRoles, 'webhook:read');
   const canManageWebhooks = hasPermission(userRoles, 'webhook:manage');
   const canReadSecret = hasPermission(userRoles, 'webhook:secret:read');
+  const canRetryWebhook = hasPermission(userRoles, 'webhook:retry');
 
   const [url, setUrl] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
@@ -507,6 +749,10 @@ export function DeveloperPage() {
         <DeliveryInspectionDrawer
           delivery={activeDelivery}
           onClose={() => setSelectedDelivery(null)}
+          canRetry={canRetryWebhook}
+          onRetrySuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['webhookDeliveries'] });
+          }}
         />
       )}
     </main>

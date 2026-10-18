@@ -1,6 +1,7 @@
 import React from 'react';
 import { describe, it, expect, vi } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   DeveloperPortalAccessDenied,
   WebhookRegistrationForm,
@@ -9,6 +10,21 @@ import {
   extractWebhookErrorMessage
 } from '../pages/DeveloperPage';
 import type { WebhookDelivery, WebhookEndpoint } from '../api/webhook';
+
+const testQueryClient = new QueryClient({
+  defaultOptions: {
+    queries: { retry: false },
+    mutations: { retry: false }
+  }
+});
+
+function renderWithClient(ui: React.ReactElement) {
+  return renderToStaticMarkup(
+    <QueryClientProvider client={testQueryClient}>
+      {ui}
+    </QueryClientProvider>
+  );
+}
 
 describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () => {
   const mockDeliveries: WebhookDelivery[] = [
@@ -85,7 +101,7 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
     it('renders delivery header, event type, status, and close button', () => {
       const delivery = mockDeliveries[0];
       const onClose = vi.fn();
-      const markup = renderToStaticMarkup(
+      const markup = renderWithClient(
         <DeliveryInspectionDrawer delivery={delivery} onClose={onClose} />
       );
 
@@ -99,7 +115,7 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
     it('renders delivery metadata grid including ID, endpoint, response status, and timestamp', () => {
       const delivery = mockDeliveries[0];
       const onClose = vi.fn();
-      const markup = renderToStaticMarkup(
+      const markup = renderWithClient(
         <DeliveryInspectionDrawer delivery={delivery} onClose={onClose} />
       );
 
@@ -115,7 +131,7 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
     it('renders formatted JSON payload matching the delivery payload', () => {
       const delivery = mockDeliveries[0];
       const onClose = vi.fn();
-      const markup = renderToStaticMarkup(
+      const markup = renderWithClient(
         <DeliveryInspectionDrawer delivery={delivery} onClose={onClose} />
       );
 
@@ -128,7 +144,7 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
     it('renders failed delivery with HTTP 500 error code and failure diagnostic data', () => {
       const delivery = mockDeliveries[1];
       const onClose = vi.fn();
-      const markup = renderToStaticMarkup(
+      const markup = renderWithClient(
         <DeliveryInspectionDrawer delivery={delivery} onClose={onClose} />
       );
 
@@ -142,7 +158,7 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
     it('renders recovery.started delivery with AI recovery context intact', () => {
       const delivery = mockDeliveries[2];
       const onClose = vi.fn();
-      const markup = renderToStaticMarkup(
+      const markup = renderWithClient(
         <DeliveryInspectionDrawer delivery={delivery} onClose={onClose} />
       );
 
@@ -157,7 +173,7 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
     it('switches cleanly from payment.succeeded to payment.failed without retaining stale fields', () => {
       const onClose = vi.fn();
 
-      const markup1 = renderToStaticMarkup(
+      const markup1 = renderWithClient(
         <DeliveryInspectionDrawer delivery={mockDeliveries[0]} onClose={onClose} />
       );
       expect(markup1).toContain('#34');
@@ -166,7 +182,7 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
       expect(markup1).not.toContain('evt_demo_pay_fail_002');
       expect(markup1).not.toContain('INSUFFICIENT_FUNDS');
 
-      const markup2 = renderToStaticMarkup(
+      const markup2 = renderWithClient(
         <DeliveryInspectionDrawer delivery={mockDeliveries[1]} onClose={onClose} />
       );
       expect(markup2).toContain('#35');
@@ -378,6 +394,241 @@ describe('Merchant Developer Portal & Delivery Inspection Drawer (Task 1)', () =
       );
 
       expect(markup).toContain('No webhook endpoints configured.');
+    });
+  });
+
+  describe('7. Webhook Delivery Operations (Diagnostics, Payload Copy, and Manual Replay — Task 3)', () => {
+    const failedDeliveryWithStatus: WebhookDelivery = {
+      id: 101,
+      endpointId: 13,
+      eventType: 'payment.failed',
+      payload: {
+        id: 'evt_pay_fail_diag',
+        data: {
+          failureCode: 'INSUFFICIENT_FUNDS',
+          failureReason: 'Debit card issuer returned decline code 51'
+        }
+      },
+      status: 'failed',
+      responseStatus: 500,
+      createdAt: '2026-09-11T14:00:00.000Z'
+    };
+
+    const failedDeliveryNetworkError: WebhookDelivery = {
+      id: 102,
+      endpointId: 13,
+      eventType: 'payment.failed',
+      payload: {
+        id: 'evt_pay_fail_net',
+        data: {
+          failureCode: 'GATEWAY_TIMEOUT',
+          failureMessage: 'Connection timed out to destination'
+        }
+      },
+      status: 'failed',
+      responseStatus: null,
+      createdAt: '2026-09-11T14:01:00.000Z'
+    };
+
+    const successDelivery: WebhookDelivery = {
+      id: 103,
+      endpointId: 13,
+      eventType: 'payment.succeeded',
+      payload: {
+        id: 'evt_pay_succ_diag',
+        data: { amount: 10000 }
+      },
+      status: 'success',
+      responseStatus: 200,
+      createdAt: '2026-09-11T14:02:00.000Z'
+    };
+
+    describe('7.1 Failure Diagnostics Card', () => {
+      it('renders structured failure diagnostic card for failed delivery with HTTP 500 server error', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+          />
+        );
+
+        expect(markup).toContain('data-testid="delivery-failure-diagnostic"');
+        expect(markup).toContain('Failure Diagnostic');
+        expect(markup).toContain('HTTP 500 (Server Error)');
+        expect(markup).toContain('INSUFFICIENT_FUNDS');
+        expect(markup).toContain('Debit card issuer returned decline code 51');
+      });
+
+      it('renders network timeout fallback when responseStatus is null', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryNetworkError}
+            onClose={() => {}}
+          />
+        );
+
+        expect(markup).toContain('data-testid="delivery-failure-diagnostic"');
+        expect(markup).toContain('No response received (network timeout or connection error)');
+        expect(markup).toContain('GATEWAY_TIMEOUT');
+        expect(markup).toContain('Connection timed out to destination');
+      });
+
+      it('does not render failure diagnostic card for successful delivery', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={successDelivery}
+            onClose={() => {}}
+          />
+        );
+
+        expect(markup).not.toContain('data-testid="delivery-failure-diagnostic"');
+        expect(markup).not.toContain('Failure Diagnostic');
+      });
+    });
+
+    describe('7.2 Payload Copy Button', () => {
+      it('renders Copy payload button with data-testid and correct label', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+          />
+        );
+
+        expect(markup).toContain('data-testid="copy-payload-btn"');
+        expect(markup).toContain('title="Copy raw JSON payload"');
+        expect(markup).toContain('Copy');
+      });
+    });
+
+    describe('7.3 Manual Replay Button & Authorization Boundaries', () => {
+      it('renders enabled Retry Delivery button when user has webhook:retry (canRetry = true)', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+            canRetry={true}
+          />
+        );
+
+        expect(markup).toContain('data-testid="retry-delivery-btn"');
+        expect(markup).toContain('Retry Delivery');
+        expect(markup).not.toContain('Retry (Locked)');
+        expect(markup).not.toContain('data-testid="delivery-retry-unauthorized-notice"');
+      });
+
+      it('renders disabled button and locked notice when user lacks webhook:retry (canRetry = false)', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+            canRetry={false}
+          />
+        );
+
+        expect(markup).toContain('data-testid="retry-delivery-btn"');
+        expect(markup).toContain('Retry (Locked)');
+        expect(markup).toContain('disabled=""');
+        expect(markup).toContain('data-testid="delivery-retry-unauthorized-notice"');
+        expect(markup).toContain('webhook:retry');
+      });
+
+      it('renders disabled Retrying... state when replay is in-flight', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+            canRetry={true}
+            retryState={{ isPending: true, result: null }}
+          />
+        );
+
+        expect(markup).toContain('data-testid="retry-delivery-btn"');
+        expect(markup).toContain('Retrying...');
+        expect(markup).toContain('disabled=""');
+      });
+    });
+
+    describe('7.4 Replay Result Feedback Banners', () => {
+      it('renders success banner with outcome message upon successful replay', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+            canRetry={true}
+            retryState={{
+              isPending: false,
+              result: {
+                type: 'success',
+                message: 'Delivery dispatched successfully with HTTP 200.'
+              }
+            }}
+          />
+        );
+
+        expect(markup).toContain('data-testid="retry-success-banner"');
+        expect(markup).toContain('Replay Successful');
+        expect(markup).toContain('Delivery dispatched successfully with HTTP 200.');
+        expect(markup).not.toContain('data-testid="retry-failure-banner"');
+      });
+
+      it('renders failure banner with error explanation upon failed replay', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+            canRetry={true}
+            retryState={{
+              isPending: false,
+              result: {
+                type: 'failure',
+                message: 'Delivery attempt failed: Destination responded with HTTP 500'
+              }
+            }}
+          />
+        );
+
+        expect(markup).toContain('data-testid="retry-failure-banner"');
+        expect(markup).toContain('Replay Failed');
+        expect(markup).toContain('Delivery attempt failed: Destination responded with HTTP 500');
+        expect(markup).not.toContain('data-testid="retry-success-banner"');
+      });
+
+      it('does not render feedback banners when no retry has occurred', () => {
+        const markup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+            canRetry={true}
+            retryState={{ isPending: false, result: null }}
+          />
+        );
+
+        expect(markup).not.toContain('data-testid="retry-success-banner"');
+        expect(markup).not.toContain('data-testid="retry-failure-banner"');
+      });
+    });
+
+    describe('7.5 Diagnostic Anti-Stale Switching', () => {
+      it('toggles diagnostics visibility cleanly when switching from failed to successful delivery', () => {
+        const failedMarkup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={failedDeliveryWithStatus}
+            onClose={() => {}}
+          />
+        );
+        expect(failedMarkup).toContain('data-testid="delivery-failure-diagnostic"');
+        expect(failedMarkup).toContain('INSUFFICIENT_FUNDS');
+
+        const successMarkup = renderWithClient(
+          <DeliveryInspectionDrawer
+            delivery={successDelivery}
+            onClose={() => {}}
+          />
+        );
+        expect(successMarkup).not.toContain('data-testid="delivery-failure-diagnostic"');
+        expect(successMarkup).not.toContain('INSUFFICIENT_FUNDS');
+      });
     });
   });
 });
